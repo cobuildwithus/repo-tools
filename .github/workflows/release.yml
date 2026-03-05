@@ -1,0 +1,198 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  tag-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag_metadata.outputs.version }}
+      npm_tag: ${{ steps.tag_metadata.outputs.npm_tag }}
+      is_prerelease: ${{ steps.tag_metadata.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate release tag format and package metadata
+        id: tag_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || {
+            echo "Not a tag push."
+            exit 1
+          }
+
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || {
+            echo "Tag '${GITHUB_REF_NAME}' is not a supported release tag."
+            exit 1
+          }
+
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_name="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).name)")"
+          package_repository_url="$(node -e "const p=JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')); const r=p.repository; console.log(typeof r==='string' ? r : (r && typeof r.url === 'string' ? r.url : ''))")"
+          package_version="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version)")"
+
+          [[ "${package_name}" == "@cobuild/repo-tools" ]] || {
+            echo "Unexpected package name ${package_name}; expected @cobuild/repo-tools."
+            exit 1
+          }
+
+          [[ "${package_repository_url}" == "https://github.com/cobuildwithus/repo-tools" ]] || {
+            echo "Unexpected package repository ${package_repository_url}; expected https://github.com/cobuildwithus/repo-tools."
+            exit 1
+          }
+
+          [[ "${tag_version}" == "${package_version}" ]] || {
+            echo "Tag ${tag_version} does not match package.json version ${package_version}."
+            exit 1
+          }
+
+          npm_tag=""
+          if [[ "${tag_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            npm_tag=""
+          elif [[ "${tag_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            npm_tag="alpha"
+          elif [[ "${tag_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            npm_tag="beta"
+          elif [[ "${tag_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            npm_tag="rc"
+          else
+            echo "Unsupported version format: ${tag_version}"
+            exit 1
+          fi
+
+          if [[ "${tag_version}" == *-* ]]; then
+            is_prerelease="true"
+          else
+            is_prerelease="false"
+          fi
+
+          echo "version=${tag_version}" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=${npm_tag}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+
+  build-package:
+    needs: tag-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Run release checks
+        run: npm run release:check
+
+      - name: Validate package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/npm
+          npm pack --json --pack-destination dist/npm > dist/npm/pack-output.json
+
+      - name: Upload npm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: |
+            dist/npm/*.tgz
+            dist/npm/pack-output.json
+
+  github-release:
+    needs:
+      - tag-check
+      - build-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: dist/npm
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.tag-check.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/npm/*.tgz
+          prerelease: ${{ needs.tag-check.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+
+  publish:
+    needs:
+      - tag-check
+      - build-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm (required for trusted publishing)
+        run: npm install -g npm@latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: dist/npm
+
+      - name: Publish (idempotent)
+        shell: bash
+        env:
+          NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
+          VERSION: ${{ needs.tag-check.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(dist/npm/*-"${VERSION}".tgz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "Expected exactly one tarball for ${VERSION}, found ${#tarballs[@]}"
+            ls -la dist/npm
+            exit 1
+          fi
+
+          publish_cmd=(npm publish "${tarballs[0]}" --access public --provenance)
+          if [[ -n "${NPM_TAG}" ]]; then
+            publish_cmd+=(--tag "${NPM_TAG}")
+          fi
+
+          echo "+ ${publish_cmd[*]}"
+          set +e
+          publish_output="$("${publish_cmd[@]}" 2>&1)"
+          publish_status=$?
+          set -e
+
+          echo "${publish_output}"
+          if [[ ${publish_status} -eq 0 ]]; then
+            exit 0
+          fi
+
+          if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
+            echo "Package version already published; skipping."
+            exit 0
+          fi
+
+          exit "${publish_status}"

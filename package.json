@@ -17,7 +17,10 @@
     "cobuild-close-exec-plan": "bin/cobuild-close-exec-plan",
     "cobuild-doc-gardening": "bin/cobuild-doc-gardening",
     "cobuild-check-agent-docs-drift": "bin/cobuild-check-agent-docs-drift",
-    "cobuild-committer": "bin/cobuild-committer"
+    "cobuild-committer": "bin/cobuild-committer",
+    "cobuild-update-changelog": "bin/cobuild-update-changelog",
+    "cobuild-generate-release-notes": "bin/cobuild-generate-release-notes",
+    "cobuild-release-package": "bin/cobuild-release-package"
   },
   "files": [
     "bin",
@@ -30,9 +33,11 @@
     "access": "public"
   },
   "scripts": {
-    "typecheck": "node --check test/repo-tools.test.mjs && bash -n bin/cobuild-open-exec-plan bin/cobuild-close-exec-plan bin/cobuild-doc-gardening bin/cobuild-check-agent-docs-drift bin/cobuild-committer src/open-exec-plan.sh src/close-exec-plan.sh src/doc-gardening.sh src/check-agent-docs-drift.sh src/committer.sh scripts/committer scripts/release.sh scripts/update-changelog.sh",
+    "typecheck": "node --check test/repo-tools.test.mjs && bash -n bin/cobuild-open-exec-plan bin/cobuild-close-exec-plan bin/cobuild-doc-gardening bin/cobuild-check-agent-docs-drift bin/cobuild-committer bin/cobuild-update-changelog bin/cobuild-generate-release-notes bin/cobuild-release-package src/open-exec-plan.sh src/close-exec-plan.sh src/doc-gardening.sh src/check-agent-docs-drift.sh src/committer.sh src/update-changelog.sh src/generate-release-notes.sh src/release-package.sh scripts/committer scripts/release.sh scripts/update-changelog.sh scripts/generate-release-notes.sh",
     "test": "node --test",
     "test:coverage": "node --experimental-test-coverage --test",
+    "changelog:update": "scripts/update-changelog.sh",
+    "release:notes": "scripts/generate-release-notes.sh",
     "release:check": "npm run typecheck && npm test && npm pack --dry-run",
     "release:dry-run": "scripts/release.sh patch --dry-run",
     "release:patch": "scripts/release.sh patch",

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -131,5 +131,64 @@ test('committer supports an initial commit on an unborn branch', () => {
 
   const log = run('git', ['log', '--oneline', '-1'], root);
   assert.match(log.stdout, /feat\(repo\): seed package/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('update changelog groups release entries by commit type', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+  run('git', ['remote', 'add', 'origin', 'git@github.com:example/fixture.git'], root);
+  run('git', ['tag', '-a', 'v0.0.0', '-m', 'v0.0.0'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+
+  writeFileSync(path.join(root, 'feature.txt'), 'feature\n');
+  run('git', ['add', 'feature.txt'], root);
+  run('git', ['commit', '-m', 'feat(repo): add feature'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+  writeFileSync(path.join(root, 'fix.txt'), 'fix\n');
+  run('git', ['add', 'fix.txt'], root);
+  run('git', ['commit', '-m', 'fix(repo): patch issue'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+
+  run(path.join(repoRoot, 'bin/cobuild-update-changelog'), ['0.0.1'], root);
+
+  const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+  assert.match(changelog, /## \[0.0.1\] - \d{4}-\d{2}-\d{2}/);
+  assert.match(changelog, /### Added\n- add feature/);
+  assert.match(changelog, /### Fixed\n- patch issue/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('release package dry run restores files after generating notes', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  writeFileSync(path.join(root, 'README.md'), '# Fixture\n');
+  writeFileSync(path.join(root, 'scripts-committer.sh'), `#!/usr/bin/env bash\nset -euo pipefail\nexec "${path.join(repoRoot, 'bin/cobuild-committer')}" "$@"\n`);
+  run('chmod', ['+x', 'scripts-committer.sh'], root);
+
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  pkg.repository = { type: 'git', url: 'https://github.com/example/fixture' };
+  pkg.scripts = { 'release:check': 'node -e "process.exit(0)"' };
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+  run('git', ['remote', 'add', 'origin', 'git@github.com:example/fixture.git'], root);
+  run('git', ['tag', '-a', 'v0.0.0', '-m', 'v0.0.0'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+
+  writeFileSync(path.join(root, 'README.md'), '# Fixture updated\n');
+  run('git', ['add', 'README.md'], root);
+  run('git', ['commit', '-m', 'feat(repo): add release flow'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-release-package'), ['patch', '--dry-run'], root, {
+    COBUILD_RELEASE_PACKAGE_NAME: 'fixture',
+    COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
+    COBUILD_RELEASE_COMMIT_CMD: './scripts-committer.sh',
+    COBUILD_RELEASE_NOTES_ENABLED: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Would prepare release: fixture@0.0.1/);
+  assert.equal(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version, '0.0.0');
+  assert.equal(readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  assert.equal(existsSync(path.join(root, 'release-notes', 'v0.0.1.md')), false);
   rmSync(root, { recursive: true, force: true });
 });

@@ -9,6 +9,9 @@ Shared repository operations tooling for Cobuild repos.
 - `cobuild-doc-gardening`
 - `cobuild-check-agent-docs-drift`
 - `cobuild-committer`
+- `cobuild-update-changelog`
+- `cobuild-generate-release-notes`
+- `cobuild-release-package`
 
 ## Config
 
@@ -25,6 +28,16 @@ Supported env vars:
 - `COBUILD_DOC_GARDENING_EXTRA_TRACKED_PATHS`: newline-delimited extra tracked doc paths outside `agent-docs/**`.
 - `COBUILD_COMMITTER_EXAMPLE`: example Conventional Commit shown on validation failure.
 - `COBUILD_COMMITTER_DISALLOW_GLOBS`: newline-delimited shell globs that must not be committed.
+- `COBUILD_RELEASE_PACKAGE_NAME`: expected package name for shared release flow.
+- `COBUILD_RELEASE_REPOSITORY_URL`: optional expected repository URL for shared release flow.
+- `COBUILD_RELEASE_CHECK_CMD`: optional release-check command; defaults to `npm run release:check`.
+- `COBUILD_RELEASE_COMMIT_CMD`: optional commit helper path; defaults to `scripts/committer`.
+- `COBUILD_RELEASE_COMMIT_TEMPLATE`: optional `printf` template; defaults to `chore(release): v%s`.
+- `COBUILD_RELEASE_TAG_MESSAGE_TEMPLATE`: optional tag annotation template; defaults to `v%s`.
+- `COBUILD_RELEASE_NOTES_ENABLED`: set to `1` to generate release notes.
+- `COBUILD_RELEASE_NOTES_DIR`: optional release notes output directory; defaults to `release-notes`.
+- `COBUILD_RELEASE_POST_PUSH_CMD`: optional shell command run after a pushed release.
+- `COBUILD_RELEASE_POST_PUSH_SKIP_ENV`: optional env var name; if that env var is `1`, skip the post-push hook.
 
 ## Release
 

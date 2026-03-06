@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2026-03-06
+
+### Fixed
+- avoid pnpm dependency for metadata-only updates
+
 ## [0.1.5] - 2026-03-06
 
 ### Added

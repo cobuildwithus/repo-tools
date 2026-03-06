@@ -137,6 +137,91 @@ test('committer supports an initial commit on an unborn branch', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('switch package source updates dependency fields without install', () => {
+  const root = makeRepo();
+  const pkgPath = path.join(root, 'package.json');
+
+  run(path.join(repoRoot, 'bin/cobuild-switch-package-source'), [
+    '--package', '@cobuild/wire',
+    '--field', 'dependencies',
+    '--local', '../wire',
+    '--no-install',
+  ], root);
+  let pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  assert.equal(pkg.dependencies['@cobuild/wire'], 'link:../wire');
+
+  run(path.join(repoRoot, 'bin/cobuild-switch-package-source'), [
+    '--package', '@cobuild/repo-tools',
+    '--field', 'devDependencies',
+    '--published', '^0.1.4',
+    '--no-install',
+  ], root);
+  pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  assert.equal(pkg.devDependencies['@cobuild/repo-tools'], '^0.1.4');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('package audit context builds configured text bundles and excludes sensitive paths', () => {
+  const root = makeRepo();
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  mkdirSync(path.join(root, 'agent-docs'), { recursive: true });
+  mkdirSync(path.join(root, 'tests'), { recursive: true });
+  mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
+  writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
+  writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
+  writeFileSync(path.join(root, 'src', 'index.ts'), 'export const value = 1;\n');
+  writeFileSync(path.join(root, 'scripts', 'helper.sh'), '#!/usr/bin/env bash\n');
+  writeFileSync(path.join(root, 'agent-docs', 'index.md'), '# docs\n');
+  writeFileSync(path.join(root, 'tests', 'sample.test.ts'), 'test(\"ok\", () => {});\n');
+  writeFileSync(path.join(root, '.github', 'workflows', 'test.yml'), 'name: test\n');
+  writeFileSync(path.join(root, '.env'), 'SECRET=1\n');
+
+  run(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--txt', '--no-ci'], root, {
+    COBUILD_AUDIT_CONTEXT_PREFIX: 'fixture-audit',
+    COBUILD_AUDIT_CONTEXT_TITLE: 'Fixture Audit Bundle',
+    COBUILD_AUDIT_CONTEXT_REPO_LABEL: 'fixture',
+    COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS: 'AGENTS.md\nARCHITECTURE.md\npackage.json\n',
+    COBUILD_AUDIT_CONTEXT_SCAN_SPECS: 'src\nscripts\n',
+    COBUILD_AUDIT_CONTEXT_TEST_SCAN_SPECS: 'tests\n',
+    COBUILD_AUDIT_CONTEXT_DOC_SCAN_SPECS: 'agent-docs:*.md\n',
+    COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE: '1',
+  });
+
+  const auditDir = path.join(root, 'audit-packages');
+  const outputName = readdirSync(auditDir).find((name) => name.startsWith('fixture-audit-') && name.endsWith('.txt'));
+  assert.ok(outputName, 'expected audit text bundle');
+  const bundle = readFileSync(path.join(auditDir, outputName), 'utf8');
+  assert.match(bundle, /Fixture Audit Bundle/);
+  assert.match(bundle, /===== FILE: src\/index\.ts =====/);
+  assert.match(bundle, /===== FILE: tests\/sample\.test\.ts =====/);
+  assert.doesNotMatch(bundle, /===== FILE: \.env =====/);
+  assert.doesNotMatch(bundle, /===== FILE: \.github\/workflows\/test\.yml =====/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('package audit context validates configured Solidity import closure', () => {
+  const root = makeRepo();
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
+  writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
+  writeFileSync(path.join(root, 'src', 'Main.sol'), 'pragma solidity ^0.8.0; import \"./Lib.sol\"; contract Main is Lib {}\\n');
+  writeFileSync(path.join(root, 'src', 'Lib.sol'), 'pragma solidity ^0.8.0; contract Lib {}\\n');
+
+  run(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--txt', '--no-tests', '--no-docs', '--no-ci'], root, {
+    COBUILD_AUDIT_CONTEXT_PREFIX: 'sol-audit',
+    COBUILD_AUDIT_CONTEXT_TITLE: 'Solidity Audit Bundle',
+    COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS: 'AGENTS.md\nARCHITECTURE.md\npackage.json\n',
+    COBUILD_AUDIT_CONTEXT_SCAN_SPECS: 'src:*.sol\n',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_VALIDATE_SOLIDITY_IMPORT_CLOSURE: '1',
+  });
+
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('update changelog groups release entries by commit type', () => {
   const root = makeRepo();
   writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');

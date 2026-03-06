@@ -9,13 +9,15 @@ Shared repository operations tooling for Cobuild repos.
 - `cobuild-doc-gardening`
 - `cobuild-check-agent-docs-drift`
 - `cobuild-committer`
+- `cobuild-package-audit-context`
+- `cobuild-switch-package-source`
 - `cobuild-update-changelog`
 - `cobuild-generate-release-notes`
 - `cobuild-release-package`
 
 ## Config
 
-`cobuild-check-agent-docs-drift`, `cobuild-doc-gardening`, and `cobuild-committer` read configuration from environment variables so each consuming repo can keep only thin wrappers.
+`cobuild-check-agent-docs-drift`, `cobuild-doc-gardening`, `cobuild-committer`, and `cobuild-package-audit-context` read configuration from environment variables so each consuming repo can keep only thin wrappers.
 
 Supported env vars:
 
@@ -28,6 +30,17 @@ Supported env vars:
 - `COBUILD_DOC_GARDENING_EXTRA_TRACKED_PATHS`: newline-delimited extra tracked doc paths outside `agent-docs/**`.
 - `COBUILD_COMMITTER_EXAMPLE`: example Conventional Commit shown on validation failure.
 - `COBUILD_COMMITTER_DISALLOW_GLOBS`: newline-delimited shell globs that must not be committed.
+- `COBUILD_AUDIT_CONTEXT_PREFIX`: default output filename prefix for audit packages.
+- `COBUILD_AUDIT_CONTEXT_TITLE`: heading used in merged text bundles.
+- `COBUILD_AUDIT_CONTEXT_REPO_LABEL`: repo label used in the help text.
+- `COBUILD_AUDIT_CONTEXT_SENSITIVE_NOTE`: optional extra sentence appended to the help text.
+- `COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT`, `COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT`, `COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT`: default include toggles (`0` or `1`).
+- `COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS`: newline-delimited always-included file paths.
+- `COBUILD_AUDIT_CONTEXT_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_TEST_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_DOC_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_CI_SCAN_SPECS`: newline-delimited scan specs in `dir` or `dir:glob` form.
+- `COBUILD_AUDIT_CONTEXT_PRUNE_DIR_NAMES`: newline-delimited directory names pruned while scanning.
+- `COBUILD_AUDIT_CONTEXT_EXCLUDE_GLOBS`: newline-delimited shell globs excluded from the manifest.
+- `COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE`: set to `1` to drop common secret/archive paths from the manifest.
+- `COBUILD_AUDIT_CONTEXT_VALIDATE_SOLIDITY_IMPORT_CLOSURE`: set to `1` to require packaged Solidity imports to stay closed within the manifest.
 - `COBUILD_RELEASE_PACKAGE_NAME`: expected package name for shared release flow.
 - `COBUILD_RELEASE_REPOSITORY_URL`: optional expected repository URL for shared release flow.
 - `COBUILD_RELEASE_CHECK_CMD`: optional release-check command; defaults to `npm run release:check`.
@@ -45,3 +58,24 @@ Supported env vars:
 - `npm run release:patch`
 - `npm run release:minor`
 - `npm run release:major`
+
+## Examples
+
+Switch a dependency to a published release:
+
+```bash
+pnpm exec cobuild-switch-package-source --package @cobuild/wire --field dependencies --published
+```
+
+Switch a dependency to a local link:
+
+```bash
+pnpm exec cobuild-switch-package-source --package @cobuild/wire --field dependencies --local ../wire
+```
+
+Build a text-only audit bundle using repo-local config:
+
+```bash
+source scripts/repo-tools.config.sh
+pnpm exec cobuild-package-audit-context --txt
+```

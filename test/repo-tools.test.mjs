@@ -127,8 +127,10 @@ test('committer supports an initial commit on an unborn branch', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'repo-tools-init-commit-'));
   writeFileSync(path.join(root, 'README.md'), '# Init\n');
   run('git', ['init', '-b', 'main'], root);
+  run('git', ['config', 'user.email', '20303031+rocketman-21@users.noreply.github.com'], root);
+  run('git', ['config', 'user.name', 'rocketman'], root);
 
-  run(path.join(repoRoot, 'bin/cobuild-committer'), ['feat(repo): seed package', 'README.md'], root);
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'feat(repo): seed package', 'README.md'], root);
 
   const log = run('git', ['log', '--oneline', '-1'], root);
   assert.match(log.stdout, /feat\(repo\): seed package/);

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-03-06
+
+### Fixed
+- stabilize ci git identity handling
+
 ## [0.1.3] - 2026-03-06
 
 ### Fixed

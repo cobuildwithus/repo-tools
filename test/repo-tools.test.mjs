@@ -3,9 +3,10 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, 
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const repoRoot = '<REPO_ROOT>';
+const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function run(cmd, args, cwd, env = {}) {
   const result = spawnSync(cmd, args, {

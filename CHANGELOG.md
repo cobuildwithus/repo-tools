@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-03-06
+
+### Added
+- add shared audit and package switch bins
+
+### Fixed
+- relax release commit validation
+
 ## [0.1.4] - 2026-03-06
 
 ### Fixed

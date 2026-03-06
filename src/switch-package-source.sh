@@ -84,10 +84,45 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  printf 'Error: pnpm is required\n' >&2
-  exit 1
+have_pnpm=0
+if command -v pnpm >/dev/null 2>&1; then
+  have_pnpm=1
 fi
+
+resolve_latest_published_version() {
+  local value=""
+  if [[ "$have_pnpm" == "1" ]]; then
+    value="$(pnpm view "$package_name" version --json 2>/dev/null | tr -d '"[:space:]')"
+  elif command -v npm >/dev/null 2>&1; then
+    value="$(npm view "$package_name" version --json 2>/dev/null | tr -d '"[:space:]')"
+  fi
+  if [[ -z "$value" || "$value" == "null" ]]; then
+    printf 'Error: failed to resolve latest published version for %s\n' "$package_name" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+set_package_dependency() {
+  local field="$1"
+  local name="$2"
+  local value="$3"
+  node - "$field" "$name" "$value" <<'EOF'
+const fs = require('node:fs');
+
+const [, , depField, packageName, resolvedValue] = process.argv;
+const packageJsonPath = 'package.json';
+const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+const current = pkg[depField];
+const nextField =
+  current && typeof current === 'object' && !Array.isArray(current)
+    ? { ...current }
+    : {};
+nextField[packageName] = resolvedValue;
+pkg[depField] = nextField;
+fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
+EOF
+}
 
 resolved_value=""
 case "$mode" in
@@ -102,11 +137,7 @@ case "$mode" in
     if [[ -n "$published_target" ]]; then
       resolved_value="$published_target"
     else
-      latest_version="$(pnpm view "$package_name" version --json | tr -d '"[:space:]')"
-      if [[ -z "$latest_version" || "$latest_version" == "null" ]]; then
-        printf 'Error: failed to resolve latest published version for %s\n' "$package_name" >&2
-        exit 1
-      fi
+      latest_version="$(resolve_latest_published_version)"
       resolved_value="^${latest_version}"
     fi
     ;;
@@ -116,9 +147,13 @@ case "$mode" in
     ;;
 esac
 
-pnpm pkg set "${dep_field}.${package_name}=${resolved_value}"
+set_package_dependency "$dep_field" "$package_name" "$resolved_value"
 
 if [[ "$should_install" == "1" ]]; then
+  if [[ "$have_pnpm" != "1" ]]; then
+    printf 'Error: pnpm is required when install is enabled\n' >&2
+    exit 1
+  fi
   pnpm install --force
 fi
 

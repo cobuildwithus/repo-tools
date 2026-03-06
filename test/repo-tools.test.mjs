@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const nodeBinDir = path.dirname(process.execPath);
 
 function run(cmd, args, cwd, env = {}) {
   const result = spawnSync(cmd, args, {
@@ -186,6 +187,24 @@ test('switch package source updates dependency fields without install', () => {
   ], root);
   pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   assert.equal(pkg.devDependencies['@cobuild/repo-tools'], '^0.1.4');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('switch package source works without pnpm when install is disabled', () => {
+  const root = makeRepo();
+  const pkgPath = path.join(root, 'package.json');
+
+  run(path.join(repoRoot, 'bin/cobuild-switch-package-source'), [
+    '--package', '@cobuild/wire',
+    '--field', 'dependencies',
+    '--local', '../wire',
+    '--no-install',
+  ], root, {
+    PATH: `${nodeBinDir}:/usr/bin:/bin`,
+  });
+
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  assert.equal(pkg.dependencies['@cobuild/wire'], 'link:../wire');
   rmSync(root, { recursive: true, force: true });
 });
 

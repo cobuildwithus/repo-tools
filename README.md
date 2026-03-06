@@ -29,6 +29,7 @@ Supported env vars:
 - `COBUILD_DRIFT_ALLOW_RELEASE_ARTIFACTS_ONLY`: set to `1` to allow release-artifact-only commits without docs updates.
 - `COBUILD_DOC_GARDENING_EXTRA_TRACKED_PATHS`: newline-delimited extra tracked doc paths outside `agent-docs/**`.
 - `COBUILD_COMMITTER_EXAMPLE`: example Conventional Commit shown on validation failure.
+- `COBUILD_COMMITTER_ALLOWED_TYPES`: optional comma- or newline-delimited Conventional Commit types accepted by `cobuild-committer`. Defaults to `feat,fix,refactor,build,ci,chore,docs,style,perf,test,release`.
 - `COBUILD_COMMITTER_DISALLOW_GLOBS`: newline-delimited shell globs that must not be committed.
 - `COBUILD_AUDIT_CONTEXT_PREFIX`: default output filename prefix for audit packages.
 - `COBUILD_AUDIT_CONTEXT_TITLE`: heading used in merged text bundles.
@@ -58,6 +59,8 @@ Supported env vars:
 - `npm run release:patch`
 - `npm run release:minor`
 - `npm run release:major`
+
+The shared release flow strips pnpm-only `store-dir` env config before invoking nested `npm` commands, so `pnpm run release:*` does not emit npm config warnings.
 
 ## Examples
 

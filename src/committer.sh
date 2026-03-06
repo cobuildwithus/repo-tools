@@ -65,7 +65,29 @@ fi
 
 commit_example="${COBUILD_COMMITTER_EXAMPLE:-fix(repo): concise summary}"
 if [ "$allow_non_conventional" != true ] && [ "${COMMITTER_ALLOW_NON_CONVENTIONAL:-0}" != "1" ]; then
-  conventional_commit_pattern='^(feat|fix|refactor|build|ci|chore|docs|style|perf|test)(\([A-Za-z0-9._/-]+\))?!?: .+'
+  default_allowed_types='feat,fix,refactor,build,ci,chore,docs,style,perf,test,release'
+  allowed_types_raw="${COBUILD_COMMITTER_ALLOWED_TYPES:-$default_allowed_types}"
+  allowed_types_regex=''
+  while IFS= read -r raw_type; do
+    normalized_type="${raw_type#"${raw_type%%[![:space:]]*}"}"
+    normalized_type="${normalized_type%"${normalized_type##*[![:space:]]}"}"
+    if [ -z "$normalized_type" ]; then
+      continue
+    fi
+    if ! [[ "$normalized_type" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+      printf 'Error: invalid commit type in COBUILD_COMMITTER_ALLOWED_TYPES: %s\n' "$normalized_type" >&2
+      exit 1
+    fi
+    if [ -n "$allowed_types_regex" ]; then
+      allowed_types_regex="${allowed_types_regex}|"
+    fi
+    allowed_types_regex="${allowed_types_regex}${normalized_type}"
+  done <<< "$(printf '%s' "$allowed_types_raw" | tr ',' '\n')"
+  if [ -z "$allowed_types_regex" ]; then
+    printf 'Error: COBUILD_COMMITTER_ALLOWED_TYPES resolved to an empty set\n' >&2
+    exit 1
+  fi
+  conventional_commit_pattern="^(${allowed_types_regex})(\\([A-Za-z0-9._/-]+\\))?!?: .+"
   if ! [[ "$commit_message" =~ $conventional_commit_pattern ]]; then
     printf 'Error: commit message must follow Conventional Commits (for example: "%s")\n' "$commit_example" >&2
     printf 'Use --allow-non-conventional or COMMITTER_ALLOW_NON_CONVENTIONAL=1 to bypass this check when needed\n' >&2

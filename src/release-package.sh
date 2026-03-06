@@ -76,6 +76,9 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
+# `pnpm run ...` can forward pnpm-only config keys into nested npm commands.
+# Clear them so shared release flows do not emit npm config warnings.
+unset npm_config_store_dir NPM_CONFIG_STORE_DIR || true
 
 PACKAGE_NAME="${COBUILD_RELEASE_PACKAGE_NAME:-}"
 REPOSITORY_URL="${COBUILD_RELEASE_REPOSITORY_URL:-}"

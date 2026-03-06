@@ -137,6 +137,34 @@ test('committer supports an initial commit on an unborn branch', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('committer accepts release commits by default', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'README.md'), '# Release\n');
+  run('git', ['config', 'user.email', 't@example.com'], root);
+  run('git', ['config', 'user.name', 'T'], root);
+
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'release: v0.0.1', 'README.md'], root);
+
+  const log = run('git', ['log', '--oneline', '-1'], root);
+  assert.match(log.stdout, /release: v0\.0\.1/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer supports configured allowed commit types', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'README.md'), '# Custom\n');
+  run('git', ['config', 'user.email', 't@example.com'], root);
+  run('git', ['config', 'user.name', 'T'], root);
+
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'ship: v0.0.1', 'README.md'], root, {
+    COBUILD_COMMITTER_ALLOWED_TYPES: 'ship,fix',
+  });
+
+  const log = run('git', ['log', '--oneline', '-1'], root);
+  assert.match(log.stdout, /ship: v0\.0\.1/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('switch package source updates dependency fields without install', () => {
   const root = makeRepo();
   const pkgPath = path.join(root, 'package.json');
@@ -278,5 +306,29 @@ test('release package dry run restores files after generating notes', () => {
   assert.equal(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version, '0.0.0');
   assert.equal(readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
   assert.equal(existsSync(path.join(root, 'release-notes', 'v0.0.1.md')), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('release package clears pnpm-only store-dir env before nested npm commands', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  pkg.repository = { type: 'git', url: 'https://github.com/example/fixture' };
+  pkg.scripts = {
+    'release:check': 'node -e "const bad = process.env.npm_config_store_dir || process.env.NPM_CONFIG_STORE_DIR; if (bad) { console.error(bad); process.exit(1); }"',
+  };
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+  run('git', ['remote', 'add', 'origin', 'git@github.com:example/fixture.git'], root);
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-release-package'), ['patch', '--dry-run'], root, {
+    COBUILD_RELEASE_PACKAGE_NAME: 'fixture',
+    COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
+    npm_config_store_dir: '/tmp/pnpm-store',
+    NPM_CONFIG_STORE_DIR: '/tmp/pnpm-store',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Would prepare release: fixture@0\.0\.1/);
   rmSync(root, { recursive: true, force: true });
 });

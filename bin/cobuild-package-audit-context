@@ -1,3 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/package-audit-context.sh" "$@"
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" == /* ]]; then
+    SOURCE="$TARGET"
+  else
+    SOURCE="$DIR/$TARGET"
+  fi
+done
+
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+exec "$ROOT_DIR/src/package-audit-context.sh" "$@"

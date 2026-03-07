@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -34,6 +34,15 @@ function makeRepo() {
   run('git', ['init', '-b', 'main'], root);
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }, null, 2) + '\n');
   return root;
+}
+
+function linkInstalledBin(root, binName) {
+  const binDir = path.join(root, 'node_modules', '.bin');
+  mkdirSync(binDir, { recursive: true });
+  const target = path.join(repoRoot, 'bin', binName);
+  const linkPath = path.join(binDir, binName);
+  symlinkSync(target, linkPath);
+  return linkPath;
 }
 
 test('open and close exec plan manage lifecycle', () => {
@@ -271,6 +280,7 @@ test('package audit context validates configured Solidity import closure', () =>
 
 test('update changelog groups release entries by commit type', () => {
   const root = makeRepo();
+  const updateChangelogBin = linkInstalledBin(root, 'cobuild-update-changelog');
   writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
   run('git', ['add', '.'], root);
   run('git', ['commit', '-m', 'chore: seed'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
@@ -284,7 +294,7 @@ test('update changelog groups release entries by commit type', () => {
   run('git', ['add', 'fix.txt'], root);
   run('git', ['commit', '-m', 'fix(repo): patch issue'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
 
-  run(path.join(repoRoot, 'bin/cobuild-update-changelog'), ['0.0.1'], root);
+  run(updateChangelogBin, ['0.0.1'], root);
 
   const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
   assert.match(changelog, /## \[0.0.1\] - \d{4}-\d{2}-\d{2}/);
@@ -295,6 +305,7 @@ test('update changelog groups release entries by commit type', () => {
 
 test('release package dry run restores files after generating notes', () => {
   const root = makeRepo();
+  const releasePackageBin = linkInstalledBin(root, 'cobuild-release-package');
   writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
   writeFileSync(path.join(root, 'README.md'), '# Fixture\n');
   writeFileSync(path.join(root, 'scripts-committer.sh'), `#!/usr/bin/env bash\nset -euo pipefail\nexec "${path.join(repoRoot, 'bin/cobuild-committer')}" "$@"\n`);
@@ -314,7 +325,7 @@ test('release package dry run restores files after generating notes', () => {
   run('git', ['add', 'README.md'], root);
   run('git', ['commit', '-m', 'feat(repo): add release flow'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
 
-  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-release-package'), ['patch', '--dry-run'], root, {
+  const result = runAllowFail(releasePackageBin, ['patch', '--dry-run'], root, {
     COBUILD_RELEASE_PACKAGE_NAME: 'fixture',
     COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
     COBUILD_RELEASE_COMMIT_CMD: './scripts-committer.sh',

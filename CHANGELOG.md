@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.9] - 2026-03-07
+
+### Added
+- add dependent repo sync helper
+
+### Changed
+- keep pnpm lock authoritative
+
 ## [0.1.8] - 2026-03-07
 
 ### Fixed

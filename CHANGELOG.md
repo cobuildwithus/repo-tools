@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.11] - 2026-03-07
+
+### Changed
+- centralize consumer review helpers
+
 ## [0.1.10] - 2026-03-07
 
 ### Changed

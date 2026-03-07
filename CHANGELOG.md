@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.10] - 2026-03-07
+
+### Changed
+- make pnpm dry-run fixtures explicit
+
 ## [0.1.9] - 2026-03-07
 
 ### Added

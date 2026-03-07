@@ -56,6 +56,57 @@ function linkInstalledBin(root, binName) {
   return linkPath;
 }
 
+function createFakePnpm(root) {
+  const binDir = path.join(root, 'fake-bin');
+  mkdirSync(binDir, { recursive: true });
+  const fakePnpm = path.join(binDir, 'pnpm');
+  writeFileSync(
+    fakePnpm,
+    `#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -gt 0 ] && [ "$1" = "version" ]; then
+  shift
+  action="$1"
+  shift
+
+  node - "$action" "$@" <<'EOF'
+const fs = require('node:fs');
+
+const [action, ...args] = process.argv.slice(2);
+const pkgPath = 'package.json';
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const [major, minor, patchAndRest] = String(pkg.version).split('.');
+const patch = Number((patchAndRest || '0').split('-')[0]);
+let nextVersion = pkg.version;
+
+if (action === 'patch') {
+  nextVersion = [major, minor, String(patch + 1)].join('.');
+}
+
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === '--preid') {
+    nextVersion = nextVersion + '-' + args[i + 1] + '.0';
+    i += 1;
+  }
+}
+
+pkg.version = nextVersion;
+fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\\n');
+fs.writeFileSync('pnpm-lock.yaml', "lockfileVersion: '9.0'\\n\\nimporters:\\n\\n  .:\\n    version: " + nextVersion + "\\n");
+process.stdout.write('v' + nextVersion + '\\n');
+EOF
+  exit 0
+fi
+
+echo "fake pnpm does not implement: $*" >&2
+exit 1
+`
+  );
+  run('chmod', ['+x', fakePnpm], root);
+  return binDir;
+}
+
 test('open and close exec plan manage lifecycle', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'agent-docs/exec-plans/active'), { recursive: true });
@@ -407,6 +458,7 @@ test('update changelog groups release entries by commit type', () => {
 test('release package dry run restores files after generating notes', () => {
   const root = makeRepo();
   const releasePackageBin = linkInstalledBin(root, 'cobuild-release-package');
+  const fakePnpmBin = createFakePnpm(root);
   writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
   writeFileSync(path.join(root, 'README.md'), '# Fixture\n');
   writeFileSync(path.join(root, 'scripts-committer.sh'), `#!/usr/bin/env bash\nset -euo pipefail\nexec "${path.join(repoRoot, 'bin/cobuild-committer')}" "$@"\n`);
@@ -431,6 +483,7 @@ test('release package dry run restores files after generating notes', () => {
     COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
     COBUILD_RELEASE_COMMIT_CMD: './scripts-committer.sh',
     COBUILD_RELEASE_NOTES_ENABLED: '1',
+    PATH: `${fakePnpmBin}:${process.env.PATH}`,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Would prepare release: fixture@0.0.1/);
@@ -443,6 +496,7 @@ test('release package dry run restores files after generating notes', () => {
 
 test('release package clears pnpm-only store-dir env before nested npm commands', () => {
   const root = makeRepo();
+  const fakePnpmBin = createFakePnpm(root);
   writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   pkg.repository = { type: 'git', url: 'https://github.com/example/fixture' };
@@ -459,6 +513,7 @@ test('release package clears pnpm-only store-dir env before nested npm commands'
     COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
     npm_config_store_dir: '/tmp/pnpm-store',
     NPM_CONFIG_STORE_DIR: '/tmp/pnpm-store',
+    PATH: `${fakePnpmBin}:${process.env.PATH}`,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Would prepare release: fixture@0\.0\.1/);

@@ -129,7 +129,7 @@ if ! [[ "$WAIT_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || ! [[ "$WAIT_INTERVAL_SEC" =~ ^[0-9
   exit 2
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
+if [ "$DRY_RUN" -ne 1 ] && ! command -v pnpm >/dev/null 2>&1; then
   echo "Error: pnpm is required to update dependent repositories." >&2
   exit 1
 fi

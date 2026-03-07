@@ -32,7 +32,18 @@ function runAllowFail(cmd, args, cwd, env = {}) {
 function makeRepo() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'repo-tools-'));
   run('git', ['init', '-b', 'main'], root);
-  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }, null, 2) + '\n');
+  writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'fixture',
+        version: '0.0.0',
+        packageManager: 'pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531',
+      },
+      null,
+      2
+    ) + '\n'
+  );
   return root;
 }
 
@@ -425,6 +436,7 @@ test('release package dry run restores files after generating notes', () => {
   assert.match(result.stdout, /Would prepare release: fixture@0.0.1/);
   assert.equal(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version, '0.0.0');
   assert.equal(readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  assert.equal(existsSync(path.join(root, 'package-lock.json')), false);
   assert.equal(existsSync(path.join(root, 'release-notes', 'v0.0.1.md')), false);
   rmSync(root, { recursive: true, force: true });
 });

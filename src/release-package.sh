@@ -76,8 +76,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
-# `pnpm run ...` can forward pnpm-only config keys into nested npm commands.
-# Clear them so shared release flows do not emit npm config warnings.
+# `pnpm run ...` can forward pnpm-only config keys into nested subprocesses.
+# Clear them so shared release flows stay portable across nested tool invocations.
 unset npm_config_store_dir NPM_CONFIG_STORE_DIR || true
 
 PACKAGE_NAME="${COBUILD_RELEASE_PACKAGE_NAME:-}"
@@ -304,6 +304,7 @@ echo "Current version: $current_version"
 
 package_snapshot=""
 changelog_snapshot=""
+pnpm_lock_snapshot=""
 notes_snapshot=""
 notes_path=""
 cleanup_required=true
@@ -312,11 +313,12 @@ cleanup() {
   if [ "$cleanup_required" = true ]; then
     restore_file package.json "$package_snapshot"
     restore_file CHANGELOG.md "$changelog_snapshot"
+    restore_file pnpm-lock.yaml "$pnpm_lock_snapshot"
     if [ -n "$notes_path" ]; then
       restore_file "$notes_path" "$notes_snapshot"
     fi
   fi
-  rm -f "$package_snapshot" "$changelog_snapshot"
+  rm -f "$package_snapshot" "$changelog_snapshot" "$pnpm_lock_snapshot"
   if [ -n "$notes_snapshot" ]; then
     rm -f "$notes_snapshot"
   fi
@@ -325,13 +327,14 @@ cleanup() {
 trap cleanup EXIT
 snapshot_file package.json package_snapshot
 snapshot_file CHANGELOG.md changelog_snapshot
+snapshot_file pnpm-lock.yaml pnpm_lock_snapshot
 
-npm_version_args=("$ACTION" "--no-git-tag-version")
+pnpm_version_args=("$ACTION" "--no-git-tag-version")
 if [ -n "$PREID" ]; then
-  npm_version_args+=("--preid" "$PREID")
+  pnpm_version_args+=("--preid" "$PREID")
 fi
 
-next_tag="$(npm version "${npm_version_args[@]}" | tail -n1 | tr -d '\r')"
+next_tag="$(pnpm version "${pnpm_version_args[@]}" | tail -n1 | tr -d '\r')"
 next_version="${next_tag#v}"
 npm_dist_tag="$(resolve_npm_tag "$next_version")"
 if [ -n "$npm_dist_tag" ]; then
@@ -343,6 +346,9 @@ fi
 "$SCRIPT_DIR/update-changelog.sh" "$next_version"
 
 files_to_commit=(package.json CHANGELOG.md)
+if ! git diff --quiet -- pnpm-lock.yaml 2>/dev/null; then
+  files_to_commit+=(pnpm-lock.yaml)
+fi
 
 if [ "$NOTES_ENABLED" = "1" ]; then
   previous_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"

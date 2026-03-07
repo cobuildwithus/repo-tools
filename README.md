@@ -56,13 +56,13 @@ Supported env vars:
 
 ## Release
 
-- `npm run release:check`
-- `npm run release:patch`
-- `npm run release:minor`
-- `npm run release:major`
-- `npm run sync:repos -- --version <semver>`
+- `pnpm run release:check`
+- `pnpm run release:patch`
+- `pnpm run release:minor`
+- `pnpm run release:major`
+- `pnpm run sync:repos -- --version <semver>`
 
-The shared release flow strips pnpm-only `store-dir` env config before invoking nested `npm` commands, so `pnpm run release:*` does not emit npm config warnings.
+The shared release flow uses `pnpm` for versioning and release checks, so PNPM-managed repos keep `pnpm-lock.yaml` authoritative instead of recreating `package-lock.json`.
 
 ## Consumer update policy
 
@@ -82,7 +82,7 @@ This repo now has the same one-command publish-and-bump shape:
 
 - `scripts/release.sh` can call `scripts/sync-dependent-repos.sh` after push and after npm publish visibility.
 - Skip the automatic downstream bump with `--no-sync-upstreams` or `REPO_TOOLS_SKIP_UPSTREAM_SYNC=1`.
-- Run the same flow manually with `npm run sync:repos -- --version <semver> --wait-for-publish`.
+- Run the same flow manually with `pnpm run sync:repos -- --version <semver> --wait-for-publish`.
 
 ## Examples
 

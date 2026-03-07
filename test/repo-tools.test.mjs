@@ -217,6 +217,96 @@ test('switch package source works without pnpm when install is disabled', () => 
   rmSync(root, { recursive: true, force: true });
 });
 
+test('sync dependent repos updates discovered dependent repos only', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'repo-tools-sync-test-'));
+
+  const fakeBin = path.join(root, 'bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const pnpmLog = path.join(root, 'pnpm.log');
+  const fakePnpm = path.join(fakeBin, 'pnpm');
+  writeFileSync(
+    fakePnpm,
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$PWD :: $*" >> "${pnpmLog}"
+exit 0
+`
+  );
+  run('chmod', ['+x', fakePnpm], root);
+
+  const depRepo = path.join(root, 'cli');
+  mkdirSync(depRepo, { recursive: true });
+  writeFileSync(
+    path.join(depRepo, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'tmp-cli',
+        devDependencies: {
+          '@cobuild/repo-tools': '^0.1.8',
+        },
+      },
+      null,
+      2
+    )
+  );
+
+  const skippedRepo = path.join(root, 'docs');
+  mkdirSync(skippedRepo, { recursive: true });
+  writeFileSync(path.join(skippedRepo, 'package.json'), JSON.stringify({ name: 'tmp-docs' }, null, 2));
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-sync-dependent-repos'), [
+    '--package', '@cobuild/repo-tools',
+    '--version', '0.2.0',
+    '--root', root,
+  ], repoRoot, {
+    PATH: `${fakeBin}:${process.env.PATH}`,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Repo set: cli/);
+  assert.match(
+    readFileSync(pnpmLog, 'utf8'),
+    new RegExp(`${depRepo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} :: up @cobuild/repo-tools@0\\.2\\.0`)
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('sync dependent repos supports explicit nested repo paths in dry-run mode', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'repo-tools-sync-nested-test-'));
+
+  const nestedRepo = path.join(root, 'interface', 'apps', 'web');
+  mkdirSync(nestedRepo, { recursive: true });
+  writeFileSync(
+    path.join(nestedRepo, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'tmp-web',
+        dependencies: {
+          '@cobuild/wire': '^0.1.5',
+        },
+      },
+      null,
+      2
+    )
+  );
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-sync-dependent-repos'), [
+    '--package', '@cobuild/wire',
+    '--version', '0.2.0',
+    '--root', root,
+    '--repos', 'interface/apps/web',
+    '--dry-run',
+  ], repoRoot);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Repo set: interface\/apps\/web/);
+  assert.match(
+    result.stdout,
+    new RegExp(`Would update interface/apps/web: \\(cd ${nestedRepo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} && pnpm up @cobuild/wire@0\\.2\\.0\\)`)
+  );
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('package audit context builds configured text bundles and excludes sensitive paths', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'src'), { recursive: true });

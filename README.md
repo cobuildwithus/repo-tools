@@ -10,6 +10,7 @@ Shared repository operations tooling for Cobuild repos.
 - `cobuild-check-agent-docs-drift`
 - `cobuild-committer`
 - `cobuild-package-audit-context`
+- `cobuild-sync-dependent-repos`
 - `cobuild-switch-package-source`
 - `cobuild-update-changelog`
 - `cobuild-generate-release-notes`
@@ -59,8 +60,29 @@ Supported env vars:
 - `npm run release:patch`
 - `npm run release:minor`
 - `npm run release:major`
+- `npm run sync:repos -- --version <semver>`
 
 The shared release flow strips pnpm-only `store-dir` env config before invoking nested `npm` commands, so `pnpm run release:*` does not emit npm config warnings.
+
+## Consumer update policy
+
+`@cobuild/repo-tools` is intended to be consumed as a published package from `node_modules`, not as a sibling checkout.
+
+- Current direct workspace consumers: `v1-core`, `wire`, `interface`, `chat-api`, `cli`, `indexer`, and `review-gpt-cli`.
+- Consumer wrapper scripts resolve repo-tools bins from the installed dev dependency first, so a sibling `repo-tools` clone is not required for normal repo operation.
+- After a published release that changes shared bins, release wrappers, or config env contracts, bump the affected sibling repos intentionally instead of assuming agents will infer the rollout.
+
+Typical consumer bump command from a consumer repo root:
+
+```bash
+pnpm up @cobuild/repo-tools@<version>
+```
+
+This repo now has the same one-command publish-and-bump shape:
+
+- `scripts/release.sh` can call `scripts/sync-dependent-repos.sh` after push and after npm publish visibility.
+- Skip the automatic downstream bump with `--no-sync-upstreams` or `REPO_TOOLS_SKIP_UPSTREAM_SYNC=1`.
+- Run the same flow manually with `npm run sync:repos -- --version <semver> --wait-for-publish`.
 
 ## Examples
 

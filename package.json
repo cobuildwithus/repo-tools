@@ -20,6 +20,7 @@
     "cobuild-committer": "bin/cobuild-committer",
     "cobuild-package-audit-context": "bin/cobuild-package-audit-context",
     "cobuild-switch-package-source": "bin/cobuild-switch-package-source",
+    "cobuild-sync-dependent-repos": "bin/cobuild-sync-dependent-repos",
     "cobuild-update-changelog": "bin/cobuild-update-changelog",
     "cobuild-generate-release-notes": "bin/cobuild-generate-release-notes",
     "cobuild-release-package": "bin/cobuild-release-package"
@@ -35,9 +36,10 @@
     "access": "public"
   },
   "scripts": {
-    "typecheck": "node --check test/repo-tools.test.mjs && bash -n bin/cobuild-open-exec-plan bin/cobuild-close-exec-plan bin/cobuild-doc-gardening bin/cobuild-check-agent-docs-drift bin/cobuild-committer bin/cobuild-package-audit-context bin/cobuild-switch-package-source bin/cobuild-update-changelog bin/cobuild-generate-release-notes bin/cobuild-release-package src/open-exec-plan.sh src/close-exec-plan.sh src/doc-gardening.sh src/check-agent-docs-drift.sh src/committer.sh src/package-audit-context.sh src/switch-package-source.sh src/update-changelog.sh src/generate-release-notes.sh src/release-package.sh scripts/committer scripts/release.sh scripts/update-changelog.sh scripts/generate-release-notes.sh",
+    "typecheck": "node --check test/repo-tools.test.mjs && bash -n bin/cobuild-open-exec-plan bin/cobuild-close-exec-plan bin/cobuild-doc-gardening bin/cobuild-check-agent-docs-drift bin/cobuild-committer bin/cobuild-package-audit-context bin/cobuild-switch-package-source bin/cobuild-sync-dependent-repos bin/cobuild-update-changelog bin/cobuild-generate-release-notes bin/cobuild-release-package src/open-exec-plan.sh src/close-exec-plan.sh src/doc-gardening.sh src/check-agent-docs-drift.sh src/committer.sh src/package-audit-context.sh src/switch-package-source.sh src/sync-dependent-repos.sh src/update-changelog.sh src/generate-release-notes.sh src/release-package.sh scripts/committer scripts/release.sh scripts/sync-dependent-repos.sh scripts/update-changelog.sh scripts/generate-release-notes.sh",
     "test": "node --test",
     "test:coverage": "node --experimental-test-coverage --test",
+    "sync:repos": "bash scripts/sync-dependent-repos.sh",
     "changelog:update": "scripts/update-changelog.sh",
     "release:notes": "scripts/generate-release-notes.sh",
     "release:check": "npm run typecheck && npm test && npm pack --dry-run",

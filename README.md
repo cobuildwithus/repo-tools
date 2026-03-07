@@ -68,7 +68,7 @@ The shared release flow uses `pnpm` for versioning and release checks, so PNPM-m
 
 `@cobuild/repo-tools` is intended to be consumed as a published package from `node_modules`, not as a sibling checkout.
 
-- Current direct workspace consumers: `v1-core`, `wire`, `interface`, `chat-api`, `cli`, `indexer`, and `review-gpt-cli`.
+- Current direct workspace consumers: `v1-core`, `wire`, `interface`, `chat-api`, `cli`, `indexer`, and `review-gpt`.
 - Consumer wrapper scripts resolve repo-tools bins from the installed dev dependency first, so a sibling `repo-tools` clone is not required for normal repo operation.
 - After a published release that changes shared bins, release wrappers, or config env contracts, bump the affected sibling repos intentionally instead of assuming agents will infer the rollout.
 

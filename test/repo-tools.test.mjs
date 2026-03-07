@@ -99,6 +99,15 @@ EOF
   exit 0
 fi
 
+if [ "$#" -gt 0 ]; then
+  script_name="$1"
+  script_cmd="$(node -p "const pkg = require('./package.json'); (pkg.scripts || {})['$script_name'] || ''")"
+  if [ -n "$script_cmd" ]; then
+    shift
+    exec bash -lc "$script_cmd"
+  fi
+fi
+
 echo "fake pnpm does not implement: $*" >&2
 exit 1
 `
@@ -517,5 +526,30 @@ test('release package clears pnpm-only store-dir env before nested npm commands'
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Would prepare release: fixture@0\.0\.1/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('release package prefers pnpm release checks for pnpm repos by default', () => {
+  const root = makeRepo();
+  const fakePnpmBin = createFakePnpm(root);
+  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changelog\n\nAll notable changes to this project will be documented in this file.\n');
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  pkg.repository = { type: 'git', url: 'https://github.com/example/fixture' };
+  pkg.scripts = {
+    'release:check': 'node -e "console.log(\'pnpm-release-check\')"',
+  };
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' });
+  run('git', ['remote', 'add', 'origin', 'git@github.com:example/fixture.git'], root);
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-release-package'), ['check'], root, {
+    COBUILD_RELEASE_PACKAGE_NAME: 'fixture',
+    COBUILD_RELEASE_REPOSITORY_URL: 'https://github.com/example/fixture',
+    PATH: `${fakePnpmBin}:${process.env.PATH}`,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pnpm-release-check/);
+  assert.match(result.stdout, /Release checks passed\./);
   rmSync(root, { recursive: true, force: true });
 });

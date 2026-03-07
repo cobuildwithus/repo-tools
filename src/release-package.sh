@@ -10,7 +10,7 @@ Usage:
 Environment:
   COBUILD_RELEASE_PACKAGE_NAME          required expected package name
   COBUILD_RELEASE_REPOSITORY_URL        optional expected repository URL
-  COBUILD_RELEASE_CHECK_CMD             optional release check command (default: npm run release:check)
+  COBUILD_RELEASE_CHECK_CMD             optional release check command (default: pnpm release:check for pnpm repos, otherwise npm run release:check)
   COBUILD_RELEASE_COMMIT_CMD            optional commit helper path (default: scripts/committer)
   COBUILD_RELEASE_COMMIT_TEMPLATE       optional printf template (default: chore(release): v%s)
   COBUILD_RELEASE_TAG_MESSAGE_TEMPLATE  optional printf template (default: v%s)
@@ -82,7 +82,6 @@ unset npm_config_store_dir NPM_CONFIG_STORE_DIR || true
 
 PACKAGE_NAME="${COBUILD_RELEASE_PACKAGE_NAME:-}"
 REPOSITORY_URL="${COBUILD_RELEASE_REPOSITORY_URL:-}"
-CHECK_CMD="${COBUILD_RELEASE_CHECK_CMD:-npm run release:check}"
 COMMIT_CMD="${COBUILD_RELEASE_COMMIT_CMD:-scripts/committer}"
 COMMIT_TEMPLATE="${COBUILD_RELEASE_COMMIT_TEMPLATE:-chore(release): v%s}"
 TAG_MESSAGE_TEMPLATE="${COBUILD_RELEASE_TAG_MESSAGE_TEMPLATE:-v%s}"
@@ -153,6 +152,34 @@ if (typeof repository === "string") {
     exit 1
   fi
 }
+
+repo_prefers_pnpm() {
+  if [ -f "pnpm-lock.yaml" ]; then
+    return 0
+  fi
+
+  local package_manager
+  package_manager="$({
+    node -e '
+const pkg = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
+const packageManager = typeof pkg.packageManager === "string" ? pkg.packageManager : "";
+process.stdout.write(packageManager);
+'
+  })"
+
+  [[ "$package_manager" == pnpm@* ]]
+}
+
+default_release_check_cmd() {
+  if repo_prefers_pnpm; then
+    printf '%s\n' 'pnpm release:check'
+    return 0
+  fi
+
+  printf '%s\n' 'npm run release:check'
+}
+
+CHECK_CMD="${COBUILD_RELEASE_CHECK_CMD:-$(default_release_check_cmd)}"
 
 run_release_checks() {
   echo "Running release checks..."

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.13] - 2026-03-09
+
+### Fixed
+- preserve zip-only audit packaging exit status
+
 ## [0.1.12] - 2026-03-07
 
 ### Changed

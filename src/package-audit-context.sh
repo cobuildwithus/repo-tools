@@ -378,5 +378,9 @@ fi
 
 echo "Audit package created."
 echo "Included files: $file_count"
-[[ -n "$zip_path" ]] && echo "ZIP: $zip_path ($(du -h "$zip_path" | awk '{print $1}'))"
-[[ -n "$txt_path" ]] && echo "TXT: $txt_path ($(du -h "$txt_path" | awk '{print $1}'))"
+if [[ -n "$zip_path" ]]; then
+  echo "ZIP: $zip_path ($(du -h "$zip_path" | awk '{print $1}'))"
+fi
+if [[ -n "$txt_path" ]]; then
+  echo "TXT: $txt_path ($(du -h "$txt_path" | awk '{print $1}'))"
+fi

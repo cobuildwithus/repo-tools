@@ -417,6 +417,30 @@ test('package audit context builds configured text bundles and excludes sensitiv
   rmSync(root, { recursive: true, force: true });
 });
 
+test('package audit context exits cleanly in zip-only mode', () => {
+  const root = makeRepo();
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
+  writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
+  writeFileSync(path.join(root, 'src', 'index.ts'), 'export const value = 1;\n');
+
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--zip', '--no-tests', '--no-docs', '--no-ci'], root, {
+    COBUILD_AUDIT_CONTEXT_PREFIX: 'fixture-audit',
+    COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS: 'AGENTS.md\nARCHITECTURE.md\npackage.json\n',
+    COBUILD_AUDIT_CONTEXT_SCAN_SPECS: 'src\n',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT: '0',
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const zipLine = result.stdout.split('\n').find((line) => line.startsWith('ZIP: '));
+  assert.ok(zipLine, `expected ZIP line in stdout:\n${result.stdout}`);
+  const zipPath = zipLine.replace(/^ZIP: /, '').replace(/ \(.+\)$/, '');
+  assert.ok(existsSync(zipPath), `expected audit ZIP at ${zipPath}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('package audit context validates configured Solidity import closure', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'src'), { recursive: true });

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.14] - 2026-03-25
+
+### Fixed
+- sanitize shared review bundles
+
+### Changed
+- cover env exclusion in zip mode
+
 ## [0.1.13] - 2026-03-09
 
 ### Fixed

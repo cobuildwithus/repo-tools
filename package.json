@@ -1,6 +1,6 @@
 {
   "name": "@cobuild/repo-tools",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Shared repository operations tools for Cobuild repos",
   "license": "UNLICENSED",
   "repository": {

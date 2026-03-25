@@ -423,6 +423,7 @@ test('package audit context exits cleanly in zip-only mode', () => {
   writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
   writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
   writeFileSync(path.join(root, 'src', 'index.ts'), 'export const value = 1;\n');
+  writeFileSync(path.join(root, '.env'), 'SECRET=1\n');
 
   const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--zip', '--no-tests', '--no-docs', '--no-ci'], root, {
     COBUILD_AUDIT_CONTEXT_PREFIX: 'fixture-audit',
@@ -434,6 +435,7 @@ test('package audit context exits cleanly in zip-only mode', () => {
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Included files: 4/);
   const zipLine = result.stdout.split('\n').find((line) => line.startsWith('ZIP: '));
   assert.ok(zipLine, `expected ZIP line in stdout:\n${result.stdout}`);
   const zipPath = zipLine.replace(/^ZIP: /, '').replace(/ \(.+\)$/, '');

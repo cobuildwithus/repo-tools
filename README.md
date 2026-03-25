@@ -39,7 +39,7 @@ Supported env vars:
 - `COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT`, `COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT`, `COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT`: default include toggles (`0` or `1`).
 - `COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS`: newline-delimited always-included file paths.
 - `COBUILD_AUDIT_CONTEXT_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_TEST_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_DOC_SCAN_SPECS`, `COBUILD_AUDIT_CONTEXT_CI_SCAN_SPECS`: newline-delimited scan specs in `dir` or `dir:glob` form.
-- `COBUILD_AUDIT_CONTEXT_PRUNE_DIR_NAMES`: newline-delimited directory names pruned while scanning.
+- `COBUILD_AUDIT_CONTEXT_PRUNE_DIR_NAMES`: newline-delimited directory names excluded from scan-based selection and filtered from blocked local-residue checks.
 - `COBUILD_AUDIT_CONTEXT_EXCLUDE_GLOBS`: newline-delimited shell globs excluded from the manifest.
 - `COBUILD_AUDIT_CONTEXT_EXCLUDE_SENSITIVE`: set to `1` to drop common secret/archive paths from the manifest.
 - `COBUILD_AUDIT_CONTEXT_VALIDATE_SOLIDITY_IMPORT_CLOSURE`: set to `1` to require packaged Solidity imports to stay closed within the manifest.
@@ -68,7 +68,7 @@ The shared release flow uses `pnpm` for versioning and release checks, so PNPM-m
 
 `@cobuild/repo-tools` is intended to be consumed as a published package from `node_modules`, not as a sibling checkout.
 
-- Current direct workspace consumers: `v1-core`, `wire`, `interface`, `chat-api`, `cli`, `indexer`, and `review-gpt`.
+- Current direct workspace consumers: `v1-core`, `wire`, `interface`, `chat-api`, `cli`, `indexer`, `healthybob`, and `review-gpt`.
 - Consumer wrapper scripts resolve repo-tools bins from the installed dev dependency first, so a sibling `repo-tools` clone is not required for normal repo operation.
 - After a published release that changes shared bins, release wrappers, or config env contracts, bump the affected sibling repos intentionally instead of assuming agents will infer the rollout.
 
@@ -104,3 +104,5 @@ Build a text-only audit bundle using repo-local config:
 source scripts/repo-tools.config.sh
 pnpm exec cobuild-package-audit-context --txt
 ```
+
+`cobuild-package-audit-context` now stages bundles from git-visible files, prunes untracked emitted JS/declaration sidecars when matching TypeScript source siblings exist, and filters common local review-leak residue such as `.env`, `.next`, `.test-dist`, `dist`, and `*.tsbuildinfo` from the manifest without applying broad repo-specific build-directory bans.

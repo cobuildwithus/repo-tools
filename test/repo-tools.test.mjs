@@ -417,6 +417,83 @@ test('package audit context builds configured text bundles and excludes sensitiv
   rmSync(root, { recursive: true, force: true });
 });
 
+test('package audit context cleans clustered generated TypeScript sidecars but keeps hand-authored JS files', () => {
+  const root = makeRepo();
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
+  writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
+  writeFileSync(path.join(root, 'src', 'index.ts'), 'export const value = 1;\n');
+  writeFileSync(path.join(root, 'src', 'index.js'), 'export const value = 1;\n');
+  writeFileSync(path.join(root, 'src', 'index.d.ts'), 'export declare const value = 1;\n');
+  writeFileSync(path.join(root, 'src', 'manual.ts'), 'export const manualTs = true;\n');
+  writeFileSync(path.join(root, 'src', 'manual.js'), 'export const manualJs = true;\n');
+  writeFileSync(path.join(root, 'src', 'hand-authored.js'), 'export const handAuthored = true;\n');
+  writeFileSync(path.join(root, 'scripts', 'postcss.config.mjs'), 'export default {};\n');
+
+  run(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--txt', '--no-tests', '--no-docs', '--no-ci'], root, {
+    COBUILD_AUDIT_CONTEXT_PREFIX: 'fixture-audit',
+    COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS: 'AGENTS.md\nARCHITECTURE.md\npackage.json\n',
+    COBUILD_AUDIT_CONTEXT_SCAN_SPECS: 'src\nscripts\n',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT: '0',
+  });
+
+  assert.equal(existsSync(path.join(root, 'src', 'index.js')), false);
+  assert.equal(existsSync(path.join(root, 'src', 'index.d.ts')), false);
+  assert.equal(existsSync(path.join(root, 'src', 'manual.js')), true);
+  assert.equal(existsSync(path.join(root, 'src', 'hand-authored.js')), true);
+  assert.equal(existsSync(path.join(root, 'scripts', 'postcss.config.mjs')), true);
+
+  const auditDir = path.join(root, 'audit-packages');
+  const outputName = readdirSync(auditDir).find((name) => name.startsWith('fixture-audit-') && name.endsWith('.txt'));
+  assert.ok(outputName, 'expected audit text bundle');
+  const bundle = readFileSync(path.join(auditDir, outputName), 'utf8');
+  assert.match(bundle, /===== FILE: src\/manual\.js =====/);
+  assert.match(bundle, /===== FILE: src\/hand-authored\.js =====/);
+  assert.match(bundle, /===== FILE: scripts\/postcss\.config\.mjs =====/);
+  assert.doesNotMatch(bundle, /===== FILE: src\/index\.js =====/);
+  assert.doesNotMatch(bundle, /===== FILE: src\/index\.d\.ts =====/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('package audit context filters blocked local residue but keeps env examples', () => {
+  const root = makeRepo();
+  mkdirSync(path.join(root, 'apps', 'web', '.next', 'types'), { recursive: true });
+  mkdirSync(path.join(root, 'packages', 'core', 'dist'), { recursive: true });
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'AGENTS.md'), '# agents\n');
+  writeFileSync(path.join(root, 'ARCHITECTURE.md'), '# arch\n');
+  writeFileSync(path.join(root, 'apps', 'web', '.env'), 'SECRET=1\n');
+  writeFileSync(path.join(root, 'apps', 'web', '.env.example'), 'SECRET=\n');
+  writeFileSync(path.join(root, 'apps', 'web', '.next', 'types', 'routes.d.ts'), 'export {};\n');
+  writeFileSync(path.join(root, 'packages', 'core', 'dist', 'index.js'), 'export {};\n');
+  writeFileSync(path.join(root, 'packages', 'core', 'tsconfig.tsbuildinfo'), '{}\n');
+  writeFileSync(path.join(root, 'src', 'index.ts'), 'export const value = 1;\n');
+
+  run(path.join(repoRoot, 'bin/cobuild-package-audit-context'), ['--txt', '--no-tests', '--no-docs', '--no-ci'], root, {
+    COBUILD_AUDIT_CONTEXT_PREFIX: 'fixture-audit',
+    COBUILD_AUDIT_CONTEXT_ALWAYS_PATHS: 'AGENTS.md\nARCHITECTURE.md\npackage.json\n',
+    COBUILD_AUDIT_CONTEXT_SCAN_SPECS: 'src\napps\npackages\n',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_TESTS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_DOCS_DEFAULT: '0',
+    COBUILD_AUDIT_CONTEXT_INCLUDE_CI_DEFAULT: '0',
+  });
+
+  const auditDir = path.join(root, 'audit-packages');
+  const outputName = readdirSync(auditDir).find((name) => name.startsWith('fixture-audit-') && name.endsWith('.txt'));
+  assert.ok(outputName, 'expected audit text bundle');
+  const bundle = readFileSync(path.join(auditDir, outputName), 'utf8');
+  assert.match(bundle, /===== FILE: apps\/web\/\.env\.example =====/);
+  assert.match(bundle, /===== FILE: src\/index\.ts =====/);
+  assert.doesNotMatch(bundle, /===== FILE: apps\/web\/\.env =====/);
+  assert.doesNotMatch(bundle, /===== FILE: apps\/web\/\.next\/types\/routes\.d\.ts =====/);
+  assert.doesNotMatch(bundle, /===== FILE: packages\/core\/dist\/index\.js =====/);
+  assert.doesNotMatch(bundle, /===== FILE: packages\/core\/tsconfig\.tsbuildinfo =====/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('package audit context exits cleanly in zip-only mode', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'src'), { recursive: true });

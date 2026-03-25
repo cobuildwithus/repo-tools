@@ -5,5 +5,5 @@ cd "$ROOT_DIR"
 exec "$ROOT_DIR/bin/cobuild-sync-dependent-repos" \
   --package @cobuild/repo-tools \
   --root "$ROOT_DIR/.." \
-  --repos "v1-core,wire,interface,chat-api,cli,indexer,review-gpt" \
+  --repos "v1-core,wire,interface,chat-api,cli,indexer,healthybob,review-gpt" \
   "$@"

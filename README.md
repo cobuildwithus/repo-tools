@@ -2,6 +2,20 @@
 
 Shared repository operations tooling for Cobuild repos.
 
+## Skills
+
+This repo can also host installable Codex skills under `skills/`.
+
+Current skill:
+
+- `work-with-pro`: delegate repo work to ChatGPT Pro through `review-gpt`, then revisit the provided thread later, download returned patch, diff, or zip artifacts, and resume the current Codex session to implement them.
+
+Install from the public repo with:
+
+```bash
+npx skills add https://github.com/cobuildwithus/repo-tools --skill work-with-pro
+```
+
 ## Tools
 
 - `cobuild-open-exec-plan`

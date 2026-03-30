@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.15] - 2026-03-30
+
+### Added
+- add work-with-pro skill
+
+### Changed
+- clarify review-gpt runtime contract
+
 ## [Unreleased]
 
 ### Changed

@@ -1,4 +1,4 @@
 interface:
   display_name: "Work With Pro"
   short_description: "Delegate repo work to ChatGPT Pro and wake later"
-  default_prompt: "Use $work-with-pro to wait on a provided ChatGPT thread or send a review-gpt task, then download returned patch, diff, or zip artifacts and resume the current Codex session."
+  default_prompt: "Use $work-with-pro to work with a ChatGPT Pro thread. Prefer watch-only when the user already has a prepared thread URL with repo context attached. Use send-and-wake through review-gpt, which should own repo-context packaging. If review-gpt is missing, stop with a clear setup instruction."

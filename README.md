@@ -8,7 +8,7 @@ This repo can also host installable Codex skills under `skills/`.
 
 Current skill:
 
-- `work-with-pro`: delegate repo work to ChatGPT Pro through `review-gpt`, then revisit the provided thread later, download returned patch, diff, or zip artifacts, and resume the current Codex session to implement them.
+- `work-with-pro`: work with a ChatGPT Pro thread for repo tasks. Prefer `watch-only` when the user already has a prepared thread URL with repo context attached. Use `send-and-wake` through `review-gpt`, which should own repo-context packaging. The skill does not install `review-gpt`; it assumes the runtime tool already exists. Later, download returned patch, diff, or zip artifacts and resume the current Codex session to implement them.
 
 Install from the public repo with:
 

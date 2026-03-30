@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- make `work-with-pro` explicit that `watch-only` is for already-prepared Pro threads and that existing threads are blind without repo context
+- make `work-with-pro` treat `review-gpt` as the sole runtime dependency for `send-and-wake`, with no auto-install and no implicit `repo-tools` fallback
+
 ## [0.1.14] - 2026-03-25
 
 ### Fixed

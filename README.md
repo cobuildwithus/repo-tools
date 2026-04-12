@@ -4,16 +4,12 @@ Shared repository operations tooling for Cobuild repos.
 
 ## Skills
 
-This repo can also host installable Codex skills under `skills/`.
+This repo no longer hosts installable Codex skills.
 
-Current skill:
-
-- `work-with-pro`: work with a ChatGPT Pro thread for repo tasks. Prefer `watch-only` when the user already has a prepared thread URL with repo context attached. Use `send-and-wake` through `review-gpt`, which should own repo-context packaging. The skill does not install `review-gpt`; it assumes the runtime tool already exists. Later, download returned patch, diff, or zip artifacts and resume the current Codex session to implement them.
-
-Install from the public repo with:
+`work-with-pro` now lives in `review-gpt`. Install it from the public repo with:
 
 ```bash
-npx skills add https://github.com/cobuildwithus/repo-tools --skill work-with-pro
+npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 ```
 
 ## Tools

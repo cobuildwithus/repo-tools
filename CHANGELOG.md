@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.16] - 2026-08-14
+
+### Fixed
+- reject unsafe repository states (#1)
+
+### Changed
+- move work-with-pro to review-gpt
+
 ## [0.1.15] - 2026-03-30
 
 ### Added

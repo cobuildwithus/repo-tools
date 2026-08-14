@@ -106,39 +106,42 @@ if [ -z "$branch_ref" ]; then
   exit 1
 fi
 
-merge_head_path="$(git rev-parse --git-path MERGE_HEAD)"
-if [ -f "$merge_head_path" ]; then
-  printf 'Error: active merges are not supported; finish or abort the merge with Git before using this committer\n' >&2
-  exit 1
-fi
+repo_root="$(git rev-parse --show-toplevel)"
+operation_markers=(MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer)
+for operation_marker in "${operation_markers[@]}"; do
+  operation_path="$(git rev-parse --git-path "$operation_marker")"
+  if [ -e "$operation_path" ]; then
+    printf 'Error: active Git operation is not supported (%s); finish or abort it before using this committer\n' "$operation_marker" >&2
+    exit 1
+  fi
+done
 
 has_base_commit=true
-empty_tree='4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 if git rev-parse --verify "$branch_ref" >/dev/null 2>&1; then
   base_head="$(git rev-parse "$branch_ref")"
 else
   has_base_commit=false
   base_head=''
 fi
-comparison_tree="${base_head:-$empty_tree}"
+
+object_id_probe="$(git hash-object --stdin </dev/null)"
+zero_oid="$(printf '%*s' "${#object_id_probe}" '' | tr ' ' '0')"
+expected_old_oid="${base_head:-$zero_oid}"
 
 if [ "$#" -eq 0 ]; then
   usage
 fi
 
-files=()
 canonical_files=()
-contains_canonical_path() {
+contains_path() {
   local needle="$1"
-  local idx=0
-  local total=0
-  total="${#canonical_files[@]}"
+  shift
+  local candidate=''
 
-  while [ "$idx" -lt "$total" ]; do
-    if [ "${canonical_files[$idx]}" = "$needle" ]; then
+  for candidate in "$@"; do
+    if [ "$candidate" = "$needle" ]; then
       return 0
     fi
-    idx=$((idx + 1))
   done
   return 1
 }
@@ -155,17 +158,6 @@ for file in "$@"; do
     exit 1
   fi
 
-  if ((${#disallow_globs[@]} > 0)); then
-    for pattern in "${disallow_globs[@]}"; do
-      case "$file" in
-        $pattern)
-          printf 'Error: committing files matching %s is disallowed in this repository (%s)\n' "$pattern" "$file" >&2
-          exit 1
-          ;;
-      esac
-    done
-  fi
-
   if [ -d "$file" ]; then
     printf 'Error: directories are not allowed (%s); list exact file paths instead\n' "$file" >&2
     exit 1
@@ -179,7 +171,7 @@ for file in "$@"; do
   if [ "${#matched_files[@]}" -eq 0 ] && [ "$has_base_commit" = true ]; then
     while IFS= read -r -d '' matched_file; do
       matched_files+=("$matched_file")
-    done < <(git --literal-pathspecs ls-tree --full-tree -r --name-only -z "$base_head" -- "$file")
+    done < <(git --literal-pathspecs ls-tree --full-name -r --name-only -z "$base_head" -- "$file")
   fi
 
   if [ "${#matched_files[@]}" -eq 0 ]; then
@@ -193,8 +185,18 @@ for file in "$@"; do
   fi
 
   canonical_file="${matched_files[0]}"
-  if ! contains_canonical_path "$canonical_file"; then
-    files+=("$file")
+  if [ "${#canonical_files[@]}" -eq 0 ] || ! contains_path "$canonical_file" "${canonical_files[@]}"; then
+    if ((${#disallow_globs[@]} > 0)); then
+      for pattern in "${disallow_globs[@]}"; do
+        case "$canonical_file" in
+          $pattern)
+            printf 'Error: committing files matching %s is disallowed in this repository (%s)\n' "$pattern" "$canonical_file" >&2
+            exit 1
+            ;;
+        esac
+      done
+    fi
+
     canonical_files+=("$canonical_file")
   fi
 done
@@ -205,21 +207,79 @@ mkdir -p "$lock_dir"
 acquired_locks=()
 tmp_index=''
 tmp_commit_msg=''
+original_index_snapshot=''
+prepared_index=''
+real_index_path=''
+real_index_lock=''
+real_index_lock_acquired=false
+ref_updated=false
+
+finalize_reserved_index() {
+  if [ "$real_index_lock_acquired" != true ]; then
+    return 0
+  fi
+
+  if mv -f "$real_index_lock" "$real_index_path"; then
+    real_index_lock_acquired=false
+    return 0
+  fi
+
+  return 1
+}
 
 cleanup() {
-  if [ -n "$tmp_index" ] && [ -f "$tmp_index" ]; then
-    rm -f "$tmp_index"
+  local status=$?
+  trap - EXIT HUP INT QUIT TERM
+
+  if [ "$real_index_lock_acquired" = true ]; then
+    if [ "$ref_updated" = true ]; then
+      if ! finalize_reserved_index; then
+        printf 'Error: commit succeeded but the prepared repository index could not be installed; inspect the Git index lock before retrying\n' >&2
+        status=1
+      fi
+    else
+      rm -f "$real_index_lock"
+      real_index_lock_acquired=false
+    fi
+  fi
+
+  if [ -n "$tmp_index" ]; then
+    rm -f "$tmp_index" "${tmp_index}.lock"
   fi
 
   if [ -n "$tmp_commit_msg" ] && [ -f "$tmp_commit_msg" ]; then
     rm -f "$tmp_commit_msg"
   fi
 
+  if [ -n "$original_index_snapshot" ]; then
+    rm -f "$original_index_snapshot" "${original_index_snapshot}.lock"
+  fi
+
+  if [ -n "$prepared_index" ]; then
+    rm -f "$prepared_index" "${prepared_index}.lock"
+  fi
+
   for lock_path in "${acquired_locks[@]}"; do
     [ -f "$lock_path" ] && rm -f "$lock_path"
   done
+
+  exit "$status"
 }
 trap cleanup EXIT
+
+handle_signal() {
+  local signal_name="$1"
+  local signal_status="$2"
+  printf 'Interrupted by %s\n' "$signal_name" >&2
+  exit "$signal_status"
+}
+install_signal_traps() {
+  trap 'handle_signal HUP 129' HUP
+  trap 'handle_signal INT 130' INT
+  trap 'handle_signal QUIT 131' QUIT
+  trap 'handle_signal TERM 143' TERM
+}
+install_signal_traps
 
 create_lock() {
   local lock_file="$1"
@@ -268,7 +328,7 @@ run_local_pre_commit_hook() {
   return 0
 }
 
-for file in "${files[@]}"; do
+for file in "${canonical_files[@]}"; do
   lock_key="$(printf '%s' "$file" | shasum -a 256 | awk '{print $1}')"
   lock_path="$lock_dir/$lock_key.lock"
   lock_content="pid=$$ path=$file created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -294,7 +354,7 @@ for file in "${files[@]}"; do
   exit 1
 done
 
-if git --literal-pathspecs diff --name-only --diff-filter=U -- "${files[@]}" | grep -q '.'; then
+if git -C "$repo_root" --literal-pathspecs diff --name-only --diff-filter=U -- "${canonical_files[@]}" | grep -q '.'; then
   printf 'Error: unresolved merge conflicts in selected files\n' >&2
   exit 1
 fi
@@ -302,15 +362,49 @@ fi
 tmp_index="$(mktemp "${TMPDIR:-/tmp}/committer-index.XXXXXX")"
 if [ "$has_base_commit" = true ]; then
   GIT_INDEX_FILE="$tmp_index" git read-tree "$base_head"
+  comparison_tree="$base_head"
 else
-  GIT_INDEX_FILE="$tmp_index" git read-tree "$empty_tree"
+  GIT_INDEX_FILE="$tmp_index" git read-tree --empty
+  comparison_tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree)"
 fi
-GIT_INDEX_FILE="$tmp_index" git --literal-pathspecs add -A -- "${files[@]}"
+GIT_INDEX_FILE="$tmp_index" git -C "$repo_root" --literal-pathspecs add -A -- "${canonical_files[@]}"
 
-if GIT_INDEX_FILE="$tmp_index" git diff --cached --quiet; then
+initial_changed_files=()
+while IFS= read -r -d '' changed_path; do
+  initial_changed_files+=("$changed_path")
+done < <(GIT_INDEX_FILE="$tmp_index" git -C "$repo_root" diff --cached --name-only --no-renames -z "$comparison_tree" --)
+
+if [ "${#initial_changed_files[@]}" -eq 0 ]; then
   printf 'Warning: no changes detected for selected file paths\n' >&2
   exit 1
 fi
+
+real_index_path="$(git rev-parse --git-path index)"
+if [[ "$real_index_path" != /* ]]; then
+  real_index_path="$PWD/$real_index_path"
+fi
+real_index_existed=false
+original_index_snapshot="$(mktemp "${TMPDIR:-/tmp}/committer-real-index.XXXXXX")"
+if [ -f "$real_index_path" ]; then
+  cp "$real_index_path" "$original_index_snapshot"
+  real_index_existed=true
+else
+  GIT_INDEX_FILE="$original_index_snapshot" git read-tree --empty
+fi
+
+preexisting_staged_files=()
+for canonical_file in "${canonical_files[@]}"; do
+  if GIT_INDEX_FILE="$original_index_snapshot" git -C "$repo_root" --literal-pathspecs diff --cached --quiet "$comparison_tree" -- "$canonical_file"; then
+    continue
+  else
+    diff_status=$?
+    if [ "$diff_status" -ne 1 ]; then
+      printf 'Error: could not inspect the existing staged snapshot for %s\n' "$canonical_file" >&2
+      exit 1
+    fi
+  fi
+  preexisting_staged_files+=("$canonical_file")
+done
 
 if [ "$skip_hooks" != true ] && [ "${COMMITTER_SKIP_HOOKS:-0}" != "1" ]; then
   tmp_commit_msg="$(mktemp "${TMPDIR:-/tmp}/committer-msg.XXXXXX")"
@@ -334,12 +428,22 @@ if [ "$skip_hooks" != true ] && [ "${COMMITTER_SKIP_HOOKS:-0}" != "1" ]; then
   HUSKY=1 GIT_INDEX_FILE="$tmp_index" GIT_EDITOR=: HUSKY_GIT_PARAMS="" HUSKY_SKIP_HOOKS=1 run_husky_hook commit-msg "$tmp_commit_msg"
 fi
 
-hook_added_paths=()
+committed_files=()
 while IFS= read -r -d '' changed_path; do
-  if ! contains_canonical_path "$changed_path"; then
+  committed_files+=("$changed_path")
+done < <(GIT_INDEX_FILE="$tmp_index" git -C "$repo_root" diff --cached --name-only --no-renames -z "$comparison_tree" --)
+
+if [ "${#committed_files[@]}" -eq 0 ]; then
+  printf 'Error: hooks removed every selected change; refusing to create an empty commit\n' >&2
+  exit 1
+fi
+
+hook_added_paths=()
+for changed_path in "${committed_files[@]}"; do
+  if ! contains_path "$changed_path" "${canonical_files[@]}"; then
     hook_added_paths+=("$changed_path")
   fi
-done < <(GIT_INDEX_FILE="$tmp_index" git diff --cached --name-only --no-renames -z "$comparison_tree" --)
+done
 
 if [ "${#hook_added_paths[@]}" -gt 0 ]; then
   for hook_added_path in "${hook_added_paths[@]}"; do
@@ -349,14 +453,77 @@ if [ "${#hook_added_paths[@]}" -gt 0 ]; then
   exit 1
 fi
 
-if [ "$has_base_commit" = true ]; then
-  new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -p "$base_head" -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
-  git update-ref "$branch_ref" "$new_commit" "$base_head"
-else
-  new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
-  git update-ref "$branch_ref" "$new_commit"
+hook_removed_paths=()
+for changed_path in "${initial_changed_files[@]}"; do
+  if ! contains_path "$changed_path" "${committed_files[@]}"; then
+    hook_removed_paths+=("$changed_path")
+  fi
+done
+
+if [ "${#hook_removed_paths[@]}" -gt 0 ]; then
+  for hook_removed_path in "${hook_removed_paths[@]}"; do
+    printf 'Error: hook removed an initially selected change: %s\n' "$hook_removed_path" >&2
+  done
+  exit 1
 fi
 
-git --literal-pathspecs reset -q -- "${files[@]}"
+if [ "$has_base_commit" = true ]; then
+  new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -p "$base_head" -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
+else
+  new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
+fi
 
-printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#files[@]}"
+reconcile_files=()
+for committed_file in "${committed_files[@]}"; do
+  if [ "${#preexisting_staged_files[@]}" -eq 0 ] || ! contains_path "$committed_file" "${preexisting_staged_files[@]}"; then
+    reconcile_files+=("$committed_file")
+  fi
+done
+
+if [ "${#reconcile_files[@]}" -gt 0 ]; then
+  prepared_index="$(mktemp "${TMPDIR:-/tmp}/committer-prepared-index.XXXXXX")"
+  cp "$original_index_snapshot" "$prepared_index"
+  GIT_INDEX_FILE="$prepared_index" git -C "$repo_root" --literal-pathspecs reset -q "$new_commit" -- "${reconcile_files[@]}"
+
+  real_index_lock="${real_index_path}.lock"
+  if ! (set -o noclobber; : >"$real_index_lock") 2>/dev/null; then
+    printf 'Error: repository index is locked; no commit was created\n' >&2
+    exit 1
+  fi
+  real_index_lock_acquired=true
+
+  index_changed=false
+  if [ "$real_index_existed" = true ]; then
+    if [ ! -f "$real_index_path" ] || ! cmp -s "$real_index_path" "$original_index_snapshot"; then
+      index_changed=true
+    fi
+  elif [ -e "$real_index_path" ]; then
+    index_changed=true
+  fi
+
+  if [ "$index_changed" = true ]; then
+    printf 'Error: repository index changed during commit preparation; no commit was created\n' >&2
+    exit 1
+  fi
+
+  if ! cp "$prepared_index" "$real_index_lock"; then
+    printf 'Error: could not prepare repository index reconciliation; no commit was created\n' >&2
+    exit 1
+  fi
+fi
+
+trap '' HUP INT QUIT TERM
+if ! git update-ref "$branch_ref" "$new_commit" "$expected_old_oid"; then
+  install_signal_traps
+  exit 1
+fi
+ref_updated=true
+
+if ! finalize_reserved_index; then
+  install_signal_traps
+  printf 'Error: commit %s succeeded but the prepared repository index could not be installed; inspect the Git index lock before retrying\n' "${new_commit:0:12}" >&2
+  exit 1
+fi
+install_signal_traps
+
+printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#committed_files[@]}"

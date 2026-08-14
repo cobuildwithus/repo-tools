@@ -121,6 +121,6 @@ Commit only explicitly named files by passing the message first, followed by eac
 pnpm exec cobuild-committer "fix(tooling): keep generated output in sync" src/tool.mjs generated/tool.json
 ```
 
-Hooks may update those named files, but the committer rejects any additional staged path. List generated hook outputs explicitly.
+The committer rejects active merge, cherry-pick, revert, rebase, `git am`, and sequencer operations. Hooks may update named files, but they may not remove an initially selected change or stage an additional path; list generated outputs explicitly. Existing staged snapshots are preserved when the temporary-index commit is reconciled.
 
 `cobuild-package-audit-context` now stages bundles from git-visible files, prunes untracked emitted JS/declaration sidecars when matching TypeScript source siblings exist, and filters common local review-leak residue such as `.env`, `.next`, `.test-dist`, `dist`, and `*.tsbuildinfo` from the manifest without applying broad repo-specific build-directory bans.

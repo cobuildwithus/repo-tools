@@ -47,6 +47,28 @@ function makeRepo() {
   return root;
 }
 
+function makeGeneratedArtifactCommitRepo() {
+  const root = makeRepo();
+  run('git', ['config', 'user.email', 'test@example.invalid'], root);
+  run('git', ['config', 'user.name', 'Test User'], root);
+  writeFileSync(path.join(root, 'source.txt'), 'source v1\n');
+  writeFileSync(path.join(root, 'generated.txt'), 'generated v1\n');
+  writeFileSync(path.join(root, 'unrelated.txt'), 'unrelated v1\n');
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root);
+
+  const hookPath = path.join(root, '.git/hooks/pre-commit');
+  writeFileSync(
+    hookPath,
+    '#!/usr/bin/env bash\nset -euo pipefail\nprintf "generated v2\\n" > generated.txt\ngit add generated.txt\n'
+  );
+  run('chmod', ['+x', hookPath], root);
+  writeFileSync(path.join(root, 'source.txt'), 'source v2\n');
+  writeFileSync(path.join(root, 'unrelated.txt'), 'unrelated staged\n');
+  run('git', ['add', 'unrelated.txt'], root);
+  return root;
+}
+
 function linkInstalledBin(root, binName) {
   const binDir = path.join(root, 'node_modules', '.bin');
   mkdirSync(binDir, { recursive: true });
@@ -201,6 +223,101 @@ test('committer blocks disallowed globs', () => {
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /disallowed/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer keeps the positional message and exact-path interface', () => {
+  const root = makeRepo();
+  writeFileSync(path.join(root, 'README.md'), '# Interface\n');
+
+  const result = runAllowFail(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['-m', 'fix(repo): unsupported message option', 'README.md'],
+    root
+  );
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /unknown option: -m/);
+  assert.match(result.stderr, /"commit message" "file" \["file" \.\.\.\]/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer rejects an active non-fast-forward merge without changing merge state', () => {
+  const root = makeRepo();
+  run('git', ['config', 'user.email', 'test@example.invalid'], root);
+  run('git', ['config', 'user.name', 'Test User'], root);
+  writeFileSync(path.join(root, 'baseline.txt'), 'baseline\n');
+  run('git', ['add', '.'], root);
+  run('git', ['commit', '-m', 'chore: seed'], root);
+
+  run('git', ['checkout', '-b', 'feature'], root);
+  writeFileSync(path.join(root, 'feature.txt'), 'feature\n');
+  run('git', ['add', 'feature.txt'], root);
+  run('git', ['commit', '-m', 'feat: add feature'], root);
+
+  run('git', ['checkout', 'main'], root);
+  writeFileSync(path.join(root, 'main.txt'), 'main\n');
+  run('git', ['add', 'main.txt'], root);
+  run('git', ['commit', '-m', 'feat: advance main'], root);
+  run('git', ['merge', '--no-ff', '--no-commit', 'feature'], root);
+
+  const headBefore = run('git', ['rev-parse', 'HEAD'], root).stdout.trim();
+  const indexBefore = run('git', ['write-tree'], root).stdout.trim();
+  const mergeHeadOutput = run('git', ['rev-parse', '--git-path', 'MERGE_HEAD'], root).stdout.trim();
+  const mergeHeadPath = path.isAbsolute(mergeHeadOutput) ? mergeHeadOutput : path.join(root, mergeHeadOutput);
+  const mergeHeadBefore = readFileSync(mergeHeadPath, 'utf8');
+  const lockDirOutput = run('git', ['rev-parse', '--git-path', 'agent-commit-locks'], root).stdout.trim();
+  const lockDir = path.isAbsolute(lockDirOutput) ? lockDirOutput : path.join(root, lockDirOutput);
+  assert.equal(existsSync(lockDir), false);
+
+  const result = runAllowFail(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['--skip-hooks', 'chore(repo): finish merge', 'feature.txt'],
+    root
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /active merges are not supported/);
+  assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout.trim(), headBefore);
+  assert.equal(run('git', ['write-tree'], root).stdout.trim(), indexBefore);
+  assert.equal(readFileSync(mergeHeadPath, 'utf8'), mergeHeadBefore);
+  assert.equal(existsSync(lockDir), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer rejects hook-added paths outside the exact locked path list', () => {
+  const root = makeGeneratedArtifactCommitRepo();
+
+  const headBefore = run('git', ['rev-parse', 'HEAD'], root).stdout.trim();
+  const indexBefore = run('git', ['write-tree'], root).stdout.trim();
+  const result = runAllowFail(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['fix(repo): regenerate output', 'source.txt'],
+    root
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /hook staged a path outside the selected exact file list: generated\.txt/);
+  assert.match(result.stderr, /List every hook-generated path explicitly and retry/);
+  assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout.trim(), headBefore);
+  assert.equal(run('git', ['write-tree'], root).stdout.trim(), indexBefore);
+  assert.equal(run('git', ['diff', '--cached', '--name-only'], root).stdout, 'unrelated.txt\n');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer includes an explicitly named generated artifact without wiping unrelated staged work', () => {
+  const root = makeGeneratedArtifactCommitRepo();
+
+  run(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['fix(repo): regenerate output', 'source.txt', 'generated.txt'],
+    root
+  );
+
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'source v2\n');
+  assert.equal(run('git', ['show', 'HEAD:generated.txt'], root).stdout, 'generated v2\n');
+  assert.equal(run('git', ['diff', '--cached', '--name-only'], root).stdout, 'unrelated.txt\n');
+  assert.equal(run('git', ['diff', '--name-only', '--', 'source.txt', 'generated.txt'], root).stdout, '');
   rmSync(root, { recursive: true, force: true });
 });
 

@@ -106,6 +106,12 @@ if [ -z "$branch_ref" ]; then
   exit 1
 fi
 
+merge_head_path="$(git rev-parse --git-path MERGE_HEAD)"
+if [ -f "$merge_head_path" ]; then
+  printf 'Error: active merges are not supported; finish or abort the merge with Git before using this committer\n' >&2
+  exit 1
+fi
+
 has_base_commit=true
 empty_tree='4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 if git rev-parse --verify "$branch_ref" >/dev/null 2>&1; then
@@ -114,20 +120,22 @@ else
   has_base_commit=false
   base_head=''
 fi
+comparison_tree="${base_head:-$empty_tree}"
 
 if [ "$#" -eq 0 ]; then
   usage
 fi
 
 files=()
-contains_path() {
+canonical_files=()
+contains_canonical_path() {
   local needle="$1"
   local idx=0
   local total=0
-  total="${#files[@]}"
+  total="${#canonical_files[@]}"
 
   while [ "$idx" -lt "$total" ]; do
-    if [ "${files[$idx]}" = "$needle" ]; then
+    if [ "${canonical_files[$idx]}" = "$needle" ]; then
       return 0
     fi
     idx=$((idx + 1))
@@ -163,19 +171,31 @@ for file in "$@"; do
     exit 1
   fi
 
-  if ! contains_path "$file"; then
-    files+=("$file")
-  fi
-done
+  matched_files=()
+  while IFS= read -r -d '' matched_file; do
+    matched_files+=("$matched_file")
+  done < <(git --literal-pathspecs ls-files --full-name --cached --others --exclude-standard -z -- "$file")
 
-for file in "${files[@]}"; do
-  if [ ! -e "$file" ]; then
-    if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
-      if [ "$has_base_commit" != true ] || ! git cat-file -e "$base_head:$file" >/dev/null 2>&1; then
-        printf 'Error: file not found: %s\n' "$file" >&2
-        exit 1
-      fi
-    fi
+  if [ "${#matched_files[@]}" -eq 0 ] && [ "$has_base_commit" = true ]; then
+    while IFS= read -r -d '' matched_file; do
+      matched_files+=("$matched_file")
+    done < <(git --literal-pathspecs ls-tree --full-tree -r --name-only -z "$base_head" -- "$file")
+  fi
+
+  if [ "${#matched_files[@]}" -eq 0 ]; then
+    printf 'Error: file not found: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  if [ "${#matched_files[@]}" -ne 1 ]; then
+    printf 'Error: path must identify exactly one file: %s\n' "$file" >&2
+    exit 1
+  fi
+
+  canonical_file="${matched_files[0]}"
+  if ! contains_canonical_path "$canonical_file"; then
+    files+=("$file")
+    canonical_files+=("$canonical_file")
   fi
 done
 
@@ -274,7 +294,7 @@ for file in "${files[@]}"; do
   exit 1
 done
 
-if git diff --name-only --diff-filter=U -- "${files[@]}" | grep -q '.'; then
+if git --literal-pathspecs diff --name-only --diff-filter=U -- "${files[@]}" | grep -q '.'; then
   printf 'Error: unresolved merge conflicts in selected files\n' >&2
   exit 1
 fi
@@ -285,7 +305,7 @@ if [ "$has_base_commit" = true ]; then
 else
   GIT_INDEX_FILE="$tmp_index" git read-tree "$empty_tree"
 fi
-GIT_INDEX_FILE="$tmp_index" git add -A -- "${files[@]}"
+GIT_INDEX_FILE="$tmp_index" git --literal-pathspecs add -A -- "${files[@]}"
 
 if GIT_INDEX_FILE="$tmp_index" git diff --cached --quiet; then
   printf 'Warning: no changes detected for selected file paths\n' >&2
@@ -314,6 +334,21 @@ if [ "$skip_hooks" != true ] && [ "${COMMITTER_SKIP_HOOKS:-0}" != "1" ]; then
   HUSKY=1 GIT_INDEX_FILE="$tmp_index" GIT_EDITOR=: HUSKY_GIT_PARAMS="" HUSKY_SKIP_HOOKS=1 run_husky_hook commit-msg "$tmp_commit_msg"
 fi
 
+hook_added_paths=()
+while IFS= read -r -d '' changed_path; do
+  if ! contains_canonical_path "$changed_path"; then
+    hook_added_paths+=("$changed_path")
+  fi
+done < <(GIT_INDEX_FILE="$tmp_index" git diff --cached --name-only --no-renames -z "$comparison_tree" --)
+
+if [ "${#hook_added_paths[@]}" -gt 0 ]; then
+  for hook_added_path in "${hook_added_paths[@]}"; do
+    printf 'Error: hook staged a path outside the selected exact file list: %s\n' "$hook_added_path" >&2
+  done
+  printf 'List every hook-generated path explicitly and retry\n' >&2
+  exit 1
+fi
+
 if [ "$has_base_commit" = true ]; then
   new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -p "$base_head" -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
   git update-ref "$branch_ref" "$new_commit" "$base_head"
@@ -322,6 +357,6 @@ else
   git update-ref "$branch_ref" "$new_commit"
 fi
 
-git reset -q -- "${files[@]}"
+git --literal-pathspecs reset -q -- "${files[@]}"
 
 printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#files[@]}"

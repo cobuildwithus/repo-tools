@@ -518,6 +518,51 @@ test('committer reserves index reconciliation before advancing the branch', () =
   rmSync(root, { recursive: true, force: true });
 });
 
+test('committer reports success when EXIT cleanup recovers a transient index install failure', () => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const headBefore = run('git', ['rev-parse', 'HEAD'], root).stdout.trim();
+  const fakeBin = gitPath(root, 'committer-test-bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const mvState = gitPath(root, 'committer-test-mv-failed-once');
+  const realMv = run('sh', ['-c', 'command -v mv'], root).stdout.trim();
+  const fakeMv = path.join(fakeBin, 'mv');
+  writeFileSync(
+    fakeMv,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -e "\${COMMITTER_TEST_MV_STATE:?}" ]; then
+  printf 'failed once\\n' > "\${COMMITTER_TEST_MV_STATE}"
+  kill -TERM "$PPID"
+  exit 1
+fi
+exec "${realMv}" "$@"
+`
+  );
+  run('chmod', ['+x', fakeMv], root);
+
+  const result = runAllowFail(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['--skip-hooks', 'fix(repo): recover index install', 'source.txt'],
+    root,
+    {
+      COMMITTER_TEST_MV_STATE: mvState,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(existsSync(mvState), true);
+  assert.equal((result.stdout.match(/Committed /g) || []).length, 1);
+  assert.doesNotMatch(result.stderr, /inspect the Git index lock|reconciliation could not be confirmed/);
+  assert.doesNotMatch(result.stderr, /Interrupted by TERM/);
+  assert.notEqual(run('git', ['rev-parse', 'HEAD'], root).stdout.trim(), headBefore);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['status', '--porcelain'], root).stdout, '');
+  assert.equal(existsSync(gitPath(root, 'index.lock')), false);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('committer resolves a renamed source from a subdirectory', () => {
   const root = makeCommittedFileRepo({ 'nested/source.txt': 'source\n' });
   const nested = path.join(root, 'nested');

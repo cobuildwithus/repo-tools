@@ -224,18 +224,26 @@ finalize_reserved_index() {
     return 0
   fi
 
+  if [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index"; then
+    real_index_lock_acquired=false
+    return 0
+  fi
+
   return 1
 }
 
 cleanup() {
   local status=$?
-  trap - EXIT HUP INT QUIT TERM
+  local reconciliation_failed=false
+  trap - EXIT
+  trap '' HUP INT QUIT TERM
 
   if [ "$real_index_lock_acquired" = true ]; then
     if [ "$ref_updated" = true ]; then
       if ! finalize_reserved_index; then
-        printf 'Error: commit succeeded but the prepared repository index could not be installed; inspect the Git index lock before retrying\n' >&2
-        status=1
+        if ! finalize_reserved_index; then
+          reconciliation_failed=true
+        fi
       fi
     else
       rm -f "$real_index_lock"
@@ -262,6 +270,20 @@ cleanup() {
   for lock_path in "${acquired_locks[@]}"; do
     [ -f "$lock_path" ] && rm -f "$lock_path"
   done
+
+  if [ "$ref_updated" = true ]; then
+    if [ "$reconciliation_failed" = true ]; then
+      if [ -e "$real_index_lock" ]; then
+        printf 'Error: commit %s succeeded but the prepared repository index could not be installed; inspect the Git index lock before retrying\n' "${new_commit:0:12}" >&2
+      else
+        printf 'Error: commit %s succeeded but repository index reconciliation could not be confirmed; verify the index before retrying\n' "${new_commit:0:12}" >&2
+      fi
+      status=1
+    else
+      printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#committed_files[@]}"
+      status=0
+    fi
+  fi
 
   exit "$status"
 }
@@ -518,12 +540,4 @@ if ! git update-ref "$branch_ref" "$new_commit" "$expected_old_oid"; then
   exit 1
 fi
 ref_updated=true
-
-if ! finalize_reserved_index; then
-  install_signal_traps
-  printf 'Error: commit %s succeeded but the prepared repository index could not be installed; inspect the Git index lock before retrying\n' "${new_commit:0:12}" >&2
-  exit 1
-fi
-install_signal_traps
-
-printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#committed_files[@]}"
+exit 0

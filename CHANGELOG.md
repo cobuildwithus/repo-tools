@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.17] - 2026-08-14
+
+### Fixed
+- preserve long-list matches (#2)
+
 ## [0.1.16] - 2026-08-14
 
 ### Fixed

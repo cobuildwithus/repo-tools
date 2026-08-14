@@ -70,7 +70,7 @@ fi
 
 has_change() {
   local pattern="$1"
-  echo "$changed_files" | grep -Eq "$pattern"
+  grep -Eq "$pattern" <<< "$changed_files"
 }
 
 package_json_version_only_in_range() {

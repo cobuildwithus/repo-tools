@@ -233,6 +233,47 @@ test('docs drift passes for metadata-only dependency changes', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('docs drift detects an early match in a long installed changed-file list under pipefail', () => {
+  const root = makeRepo();
+  const installedDriftCheck = linkInstalledBin(root, 'cobuild-check-agent-docs-drift');
+  const fakeBin = path.join(root, 'fake-git-bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const realGit = run('sh', ['-c', 'command -v git'], root).stdout.trim();
+  const fakeGit = path.join(fakeBin, 'git');
+  writeFileSync(
+    fakeGit,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 3 ] && [ "$1" = diff ] && [ "$2" = --name-only ] && [ "$3" = --cached ]; then
+  printf 'src/trigger.ts\\n'
+  for ((i = 0; i < 8192; i++)); do
+    printf 'fixtures/long-changed-file-%04d-%0200d.txt\\n' "$i" 0
+  done
+  exit 0
+fi
+exec "${realGit}" "$@"
+`
+  );
+  run('chmod', ['+x', fakeGit], root);
+  const bashEnv = path.join(root, 'force-long-echo-sigpipe.sh');
+  writeFileSync(
+    bashEnv,
+    'echo() {\n  if [ "$#" -eq 1 ] && [ "${#1}" -gt 100000 ]; then\n    return 141\n  fi\n  builtin echo "$@"\n}\n'
+  );
+
+  const result = runAllowFail(installedDriftCheck, [], root, {
+    BASH_ENV: bashEnv,
+    COBUILD_DRIFT_REQUIRED_FILES: 'package.json\n',
+    COBUILD_DRIFT_LARGE_CHANGE_THRESHOLD: '999999',
+    PATH: `${fakeBin}:${process.env.PATH}`,
+  });
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stdout, /Architecture-sensitive code\/process changed without matching non-generated docs updates/);
+  assert.doesNotMatch(result.stdout, /Large change set/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('committer blocks disallowed globs', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'lib'), { recursive: true });

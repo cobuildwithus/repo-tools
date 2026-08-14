@@ -563,6 +563,58 @@ exec "${realMv}" "$@"
   rmSync(root, { recursive: true, force: true });
 });
 
+test('committer reports committed state and a warning when cleanup cannot remove a temporary artifact', () => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const headBefore = run('git', ['rev-parse', 'HEAD'], root).stdout.trim();
+  const fakeBin = gitPath(root, 'committer-test-bin');
+  mkdirSync(fakeBin, { recursive: true });
+  const rmState = gitPath(root, 'committer-test-rm-failed-once');
+  const realRm = run('sh', ['-c', 'command -v rm'], root).stdout.trim();
+  const fakeRm = path.join(fakeBin, 'rm');
+  writeFileSync(
+    fakeRm,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -e "\${COMMITTER_TEST_RM_STATE:?}" ]; then
+  printf '%s\\n' "$@" > "\${COMMITTER_TEST_RM_STATE}"
+  exit 1
+fi
+exec "${realRm}" "$@"
+`
+  );
+  run('chmod', ['+x', fakeRm], root);
+
+  const result = runAllowFail(
+    path.join(repoRoot, 'bin/cobuild-committer'),
+    ['--skip-hooks', 'fix(repo): report cleanup failure', 'source.txt'],
+    root,
+    {
+      COMMITTER_TEST_RM_STATE: rmState,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+    }
+  );
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(readFileSync(rmState, 'utf8'), /committer-index\./);
+  assert.equal((result.stdout.match(/Committed /g) || []).length, 1);
+  assert.match(result.stderr, /Warning: committer cleanup did not complete; one or more temporary artifacts may remain/);
+  assert.doesNotMatch(result.stderr, /inspect the Git index lock|reconciliation could not be confirmed/);
+  assert.notEqual(run('git', ['rev-parse', 'HEAD'], root).stdout.trim(), headBefore);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['status', '--porcelain'], root).stdout, '');
+  assert.equal(existsSync(gitPath(root, 'index.lock')), false);
+  assert.equal(readdirSync(gitPath(root, 'agent-commit-locks')).length, 0);
+
+  const failedRmArgs = readFileSync(rmState, 'utf8').trimEnd().split('\n');
+  for (const failedRmArg of failedRmArgs) {
+    if (failedRmArg !== '-f') {
+      rmSync(failedRmArg, { force: true });
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('committer resolves a renamed source from a subdirectory', () => {
   const root = makeCommittedFileRepo({ 'nested/source.txt': 'source\n' });
   const nested = path.join(root, 'nested');

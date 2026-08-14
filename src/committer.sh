@@ -235,8 +235,10 @@ finalize_reserved_index() {
 cleanup() {
   local status=$?
   local reconciliation_failed=false
+  local cleanup_failed=false
   trap - EXIT
   trap '' HUP INT QUIT TERM
+  set +e
 
   if [ "$real_index_lock_acquired" = true ]; then
     if [ "$ref_updated" = true ]; then
@@ -246,29 +248,42 @@ cleanup() {
         fi
       fi
     else
-      rm -f "$real_index_lock"
-      real_index_lock_acquired=false
+      if rm -f "$real_index_lock"; then
+        real_index_lock_acquired=false
+      else
+        cleanup_failed=true
+      fi
     fi
   fi
 
   if [ -n "$tmp_index" ]; then
-    rm -f "$tmp_index" "${tmp_index}.lock"
+    if ! rm -f "$tmp_index" "${tmp_index}.lock"; then
+      cleanup_failed=true
+    fi
   fi
 
   if [ -n "$tmp_commit_msg" ] && [ -f "$tmp_commit_msg" ]; then
-    rm -f "$tmp_commit_msg"
+    if ! rm -f "$tmp_commit_msg"; then
+      cleanup_failed=true
+    fi
   fi
 
   if [ -n "$original_index_snapshot" ]; then
-    rm -f "$original_index_snapshot" "${original_index_snapshot}.lock"
+    if ! rm -f "$original_index_snapshot" "${original_index_snapshot}.lock"; then
+      cleanup_failed=true
+    fi
   fi
 
   if [ -n "$prepared_index" ]; then
-    rm -f "$prepared_index" "${prepared_index}.lock"
+    if ! rm -f "$prepared_index" "${prepared_index}.lock"; then
+      cleanup_failed=true
+    fi
   fi
 
   for lock_path in "${acquired_locks[@]}"; do
-    [ -f "$lock_path" ] && rm -f "$lock_path"
+    if [ -f "$lock_path" ] && ! rm -f "$lock_path"; then
+      cleanup_failed=true
+    fi
   done
 
   if [ "$ref_updated" = true ]; then
@@ -283,6 +298,11 @@ cleanup() {
       printf 'Committed "%s" as %s on %s with %d file(s)\n' "$commit_message" "${new_commit:0:12}" "$branch_ref" "${#committed_files[@]}"
       status=0
     fi
+  fi
+
+  if [ "$cleanup_failed" = true ]; then
+    printf 'Warning: committer cleanup did not complete; one or more temporary artifacts may remain\n' >&2
+    status=1
   fi
 
   exit "$status"

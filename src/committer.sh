@@ -213,17 +213,38 @@ real_index_path=''
 real_index_lock=''
 real_index_lock_acquired=false
 ref_updated=false
+ref_transaction_dir=''
 
 finalize_reserved_index() {
   if [ "$real_index_lock_acquired" != true ]; then
     return 0
   fi
 
-  if mv -f "$real_index_lock" "$real_index_path"; then
+  # Ref commitment releases HEAD before this cleanup runs. Reacquire native
+  # ref locks so a checkout cannot change ownership during index installation.
+  if {
+    printf 'start\nverify HEAD %s\nprepare\n' "$new_commit" || exit 1
+    exec 3<"$ref_transaction_dir/replies"
+    for phase in start prepare; do
+      IFS= read -r reply <&3 && [ "$reply" = "$phase: ok" ] || exit 1
+    done
+    if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
+      printf 'Error: repository checkout changed before index reconciliation\n' >&2
+      exit 1
+    fi
+    if ! mv -f "$real_index_lock" "$real_index_path"; then
+      [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index" || exit 1
+    fi
+    printf 'abort\n' || exit 1
+    exec 1>&-
+    IFS= read -r reply <&3 && [ "$reply" = 'abort: ok' ] || exit 1
+  } | git update-ref --stdin >"$ref_transaction_dir/replies"; then
     real_index_lock_acquired=false
     return 0
   fi
 
+  # A lost acknowledgement after installation must not turn a confirmed write
+  # into a failed reconciliation. No index write occurs outside the ref guard.
   if [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index"; then
     real_index_lock_acquired=false
     return 0
@@ -276,6 +297,12 @@ cleanup() {
 
   if [ -n "$prepared_index" ]; then
     if ! rm -f "$prepared_index" "${prepared_index}.lock"; then
+      cleanup_failed=true
+    fi
+  fi
+
+  if [ -n "$ref_transaction_dir" ]; then
+    if ! rm -f "$ref_transaction_dir/replies" || ! rmdir "$ref_transaction_dir"; then
       cleanup_failed=true
     fi
   fi
@@ -425,6 +452,13 @@ real_index_path="$(git rev-parse --git-path index)"
 if [[ "$real_index_path" != /* ]]; then
   real_index_path="$PWD/$real_index_path"
 fi
+# Compare staged entries and user-controlled flags, not refreshable stat/cache bytes.
+# The second stream distinguishes intent-to-add entries from staged empty files.
+index_state() {
+  GIT_INDEX_FILE="$1" git -C "$repo_root" ls-files --stage -v -z || return 1
+  GIT_INDEX_FILE="$1" git -C "$repo_root" diff --cached --raw -z --no-abbrev --no-renames --ita-invisible-in-index "$comparison_tree" --
+}
+
 real_index_existed=false
 original_index_snapshot="$(mktemp "${TMPDIR:-/tmp}/committer-real-index.XXXXXX")"
 if [ -f "$real_index_path" ]; then
@@ -515,9 +549,22 @@ else
   new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
 fi
 
+# A pure staged rename records the old blob at the new path mechanically.
+# Once both paths are committed, it is not a distinct partial staging snapshot.
+structural_rename_destinations=()
+while IFS= read -r -d '' rename_record && IFS= read -r -d '' rename_source && IFS= read -r -d '' rename_destination; do
+  read -r old_mode new_mode old_blob new_blob rename_status <<< "${rename_record#:}"
+  if [ "$rename_status" = R100 ] && [ "$old_mode" = "$new_mode" ] && [ "$old_blob" = "$new_blob" ] &&
+    contains_path "$rename_source" "${committed_files[@]}" && contains_path "$rename_destination" "${committed_files[@]}" &&
+    ! git cat-file -e "$new_commit:$rename_source" 2>/dev/null; then
+    structural_rename_destinations+=("$rename_destination")
+  fi
+done < <(GIT_INDEX_FILE="$original_index_snapshot" git -C "$repo_root" diff --cached --raw -z --no-abbrev --find-renames=100% --diff-filter=R "$comparison_tree" --)
+
 reconcile_files=()
 for committed_file in "${committed_files[@]}"; do
-  if [ "${#preexisting_staged_files[@]}" -eq 0 ] || ! contains_path "$committed_file" "${preexisting_staged_files[@]}"; then
+  if [ "${#preexisting_staged_files[@]}" -eq 0 ] || ! contains_path "$committed_file" "${preexisting_staged_files[@]}" ||
+    { [ "${#structural_rename_destinations[@]}" -gt 0 ] && contains_path "$committed_file" "${structural_rename_destinations[@]}"; }; then
     reconcile_files+=("$committed_file")
   fi
 done
@@ -526,6 +573,15 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
   prepared_index="$(mktemp "${TMPDIR:-/tmp}/committer-prepared-index.XXXXXX")"
   cp "$original_index_snapshot" "$prepared_index"
   GIT_INDEX_FILE="$prepared_index" git -C "$repo_root" --literal-pathspecs reset -q "$new_commit" -- "${reconcile_files[@]}"
+  # reset retains skip-worktree, but clears assume-unchanged on replaced entries.
+  if [ "${#structural_rename_destinations[@]}" -gt 0 ]; then
+    for rename_destination in "${structural_rename_destinations[@]}"; do
+      original_flags="$(GIT_INDEX_FILE="$original_index_snapshot" git -C "$repo_root" --literal-pathspecs ls-files -v -- "$rename_destination")"
+      case "$original_flags" in
+        [a-z]*) GIT_INDEX_FILE="$prepared_index" git -C "$repo_root" update-index --assume-unchanged -- "$rename_destination" ;;
+      esac
+    done
+  fi
 
   real_index_lock="${real_index_path}.lock"
   if ! (set -o noclobber; : >"$real_index_lock") 2>/dev/null; then
@@ -536,8 +592,14 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
 
   index_changed=false
   if [ "$real_index_existed" = true ]; then
-    if [ ! -f "$real_index_path" ] || ! cmp -s "$real_index_path" "$original_index_snapshot"; then
+    if [ ! -f "$real_index_path" ]; then
       index_changed=true
+    elif ! cmp -s "$real_index_path" "$original_index_snapshot"; then
+      original_state="$(index_state "$original_index_snapshot" | git hash-object --stdin)"
+      current_state="$(index_state "$real_index_path" | git hash-object --stdin)"
+      if [ "$original_state" != "$current_state" ]; then
+        index_changed=true
+      fi
     fi
   elif [ -e "$real_index_path" ]; then
     index_changed=true
@@ -554,10 +616,33 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
   fi
 fi
 
+ref_transaction_dir="$(mktemp -d "${TMPDIR:-/tmp}/committer-ref-transaction.XXXXXX")"
+mkfifo "$ref_transaction_dir/replies"
 trap '' HUP INT QUIT TERM
-if ! git update-ref "$branch_ref" "$new_commit" "$expected_old_oid"; then
-  install_signal_traps
-  exit 1
+# Updating HEAD locks both the symbolic ref and its target. An index lock alone
+# cannot exclude a checkout that has installed its index but not yet changed HEAD.
+if ! {
+  printf 'start\nupdate HEAD %s %s\nprepare\n' "$new_commit" "$expected_old_oid" || exit 1
+  exec 3<"$ref_transaction_dir/replies"
+  for phase in start prepare; do
+    IFS= read -r reply <&3 && [ "$reply" = "$phase: ok" ] || exit 1
+  done
+  if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
+    printf 'Error: repository checkout changed during commit preparation; no commit was created\n' >&2
+    # Closing stdin aborts the prepared transaction and releases its locks.
+    exit 1
+  fi
+  printf 'commit\n' || exit 1
+  exec 1>&-
+  IFS= read -r reply <&3 && [ "$reply" = 'commit: ok' ] || exit 1
+} | git update-ref --stdin >"$ref_transaction_dir/replies"; then
+  # A lost acknowledgement must not discard index reconciliation for a commit
+  # that Git actually installed. The new object identifies this exact attempt.
+  if [ "$(git rev-parse --verify "$branch_ref" 2>/dev/null || true)" != "$new_commit" ]; then
+    install_signal_traps
+    exit 1
+  fi
+  printf 'Warning: ref transaction acknowledgement failed; verified the committed ref before reconciling the index\n' >&2
 fi
 ref_updated=true
 exit 0

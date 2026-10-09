@@ -653,6 +653,70 @@ exec "${realGit}" "$@"
   }
 });
 
+test('committer retains a replacement checkout index after ref commitment', async (t) => {
+  for (const destination of ['other', '--detach HEAD']) {
+    for (const sameObject of [false, true]) {
+      await t.test(`${destination}, same object: ${sameObject}`, (t) => {
+        const root = makeCommittedFileRepo({ 'source.txt': 'v1\n', 'clean.txt': 'clean\n' });
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const realGit = run('sh', ['-c', 'command -v git'], root).stdout.trim();
+        run('git', ['branch', 'other'], root);
+        writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+        const postIndex = gitPath(root, 'hooks/post-index-change');
+        writeFileSync(postIndex, `#!/usr/bin/env bash
+set -eu
+[ "\${CHECKOUT_PROBE:-}" = 1 ] || exit 0
+touch .git/checkout-index-written
+for ((i=0;i<200;i++)); do
+  [ -e .git/release-checkout ] && exit 0
+  sleep 0.025
+done
+exit 1
+`);
+        const preCommit = gitPath(root, 'hooks/pre-commit');
+        writeFileSync(preCommit, `#!/usr/bin/env bash
+set -eu
+touch -t 202001010101 clean.txt
+(set +e; env -u GIT_INDEX_FILE CHECKOUT_PROBE=1 "${realGit}" switch -q ${destination}; printf '%s\\n' "$?" > .git/checkout-done) &
+for ((i=0;i<200;i++)); do
+  [ -e .git/checkout-index-written ] && exit 0
+  sleep 0.025
+done
+exit 1
+`);
+        const referenceHook = gitPath(root, 'hooks/reference-transaction');
+        writeFileSync(referenceHook, `#!/usr/bin/env bash
+set -eu
+[ "\${CHECKOUT_PROBE:-}" != 1 ] || exit 0
+[ "$1" = committed ] || exit 0
+committed="$("${realGit}" rev-parse refs/heads/main)"
+touch .git/release-checkout
+for ((i=0;i<200;i++)); do
+  if [ -e .git/checkout-done ]; then
+    ${sameObject ? `CHECKOUT_PROBE=1 "${realGit}" update-ref ${destination === 'other' ? 'refs/heads/other' : '--no-deref HEAD'} "$committed"` : ':'}
+    [ -e .git/index.lock ]
+    "${realGit}" ls-files --stage > .git/replacement-index-entries
+    exit 0
+  fi
+  sleep 0.025
+done
+exit 1
+`);
+        for (const file of [postIndex, preCommit, referenceHook]) run('chmod', ['+x', file], root);
+        const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): retain replacement index', 'source.txt'], root);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /commit [a-f0-9]+ succeeded but the prepared repository index could not be installed/);
+        assert.equal(readFileSync(gitPath(root, 'checkout-done'), 'utf8').trim(), '0');
+        assert.equal(run('git', ['show', 'main:source.txt'], root).stdout, 'v2\n');
+        assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v1\n');
+        assert.equal(run('git', ['ls-files', '--stage'], root).stdout, readFileSync(gitPath(root, 'replacement-index-entries'), 'utf8'));
+        assert.equal(run('git', ['show', ':source.txt'], root, { GIT_INDEX_FILE: gitPath(root, 'index.lock') }).stdout, 'v2\n');
+        for (const file of ['HEAD.lock', 'refs/heads/main.lock', 'refs/heads/other.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+      });
+    }
+  }
+});
+
 test('committer reconciles an edited pure staged rename without stale content', () => {
   const root = makeCommittedFileRepo({ 'old.json': '{"version":1}\n', 'other.txt': 'v1\n' });
   run('git', ['mv', 'old.json', 'new.json'], root);
@@ -810,6 +874,73 @@ exec "${realGit}" "$@"
   const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): recover acknowledgement', 'source.txt'], root, { PATH: `${fakeBin}:${process.env.PATH}` });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /acknowledgement failed; verified the committed ref/);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v2\n');
+  for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+});
+
+test('committer retains recovery state when protected finalization fails', async (t) => {
+  for (const failure of ['advanced branch', 'rejected prepare', 'HEAD lock', 'index install']) {
+    await t.test(failure, (t) => {
+      const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+      const hook = gitPath(root, 'hooks/reference-transaction');
+      const afterCommit = failure === 'advanced branch'
+        ? 'next="$(printf "chore: advance\\n" | git commit-tree -p HEAD "HEAD^{tree}")"; FINALIZE_PROBE=1 git update-ref HEAD "$next"'
+        : failure === 'HEAD lock' ? 'printf "external lock\\n" > .git/HEAD.lock' : ':';
+      writeFileSync(hook, `#!/usr/bin/env bash
+set -eu
+[ "\${FINALIZE_PROBE:-}" != 1 ] || exit 0
+if [ "$1" = committed ]; then
+  touch .git/ref-committed
+  ${afterCommit}
+fi
+${failure === 'rejected prepare' ? '[ "$1" != prepared ] || [ ! -e .git/ref-committed ]' : 'exit 0'}
+`);
+      run('chmod', ['+x', hook], root);
+      const env = {};
+      if (failure === 'index install') {
+        const fakeBin = gitPath(root, 'install-bin');
+        mkdirSync(fakeBin);
+        writeFileSync(path.join(fakeBin, 'mv'), '#!/usr/bin/env bash\nexit 1\n');
+        run('chmod', ['+x', path.join(fakeBin, 'mv')], root);
+        env.PATH = `${fakeBin}:${process.env.PATH}`;
+      }
+      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): retain finalization recovery', 'source.txt'], root, env);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /commit [a-f0-9]+ succeeded but the prepared repository index could not be installed/);
+      assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+      assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v1\n');
+      assert.equal(run('git', ['show', ':source.txt'], root, { GIT_INDEX_FILE: gitPath(root, 'index.lock') }).stdout, 'v2\n');
+      assert.equal(existsSync(gitPath(root, 'refs/heads/main.lock')), false);
+      if (failure === 'HEAD lock') assert.equal(readFileSync(gitPath(root, 'HEAD.lock'), 'utf8'), 'external lock\n');
+      else assert.equal(existsSync(gitPath(root, 'HEAD.lock')), false);
+    });
+  }
+});
+
+test('committer confirms an installed index after a lost abort acknowledgement', (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const realGit = run('sh', ['-c', 'command -v git'], root).stdout.trim();
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const fakeBin = gitPath(root, 'abort-ack-bin');
+  mkdirSync(fakeBin);
+  const fakeGit = path.join(fakeBin, 'git');
+  writeFileSync(fakeGit, `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = update-ref ] && [ "\${2:-}" = --stdin ]; then
+  "${realGit}" "$@" | while IFS= read -r line; do
+    if [ "$line" != 'abort: ok' ]; then printf '%s\\n' "$line"; fi
+  done
+  exit 0
+fi
+exec "${realGit}" "$@"
+`);
+  run('chmod', ['+x', fakeGit], root);
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): confirm installed index', 'source.txt'], root, { PATH: `${fakeBin}:${process.env.PATH}` });
+  assert.equal(result.status, 0, result.stderr);
   assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
   assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v2\n');
   for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);

@@ -220,11 +220,31 @@ finalize_reserved_index() {
     return 0
   fi
 
-  if mv -f "$real_index_lock" "$real_index_path"; then
+  # Ref commitment releases HEAD before this cleanup runs. Reacquire native
+  # ref locks so a checkout cannot change ownership during index installation.
+  if {
+    printf 'start\nverify HEAD %s\nprepare\n' "$new_commit" || exit 1
+    exec 3<"$ref_transaction_dir/replies"
+    for phase in start prepare; do
+      IFS= read -r reply <&3 && [ "$reply" = "$phase: ok" ] || exit 1
+    done
+    if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
+      printf 'Error: repository checkout changed before index reconciliation\n' >&2
+      exit 1
+    fi
+    if ! mv -f "$real_index_lock" "$real_index_path"; then
+      [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index" || exit 1
+    fi
+    printf 'abort\n' || exit 1
+    exec 1>&-
+    IFS= read -r reply <&3 && [ "$reply" = 'abort: ok' ] || exit 1
+  } | git update-ref --stdin >"$ref_transaction_dir/replies"; then
     real_index_lock_acquired=false
     return 0
   fi
 
+  # A lost acknowledgement after installation must not turn a confirmed write
+  # into a failed reconciliation. No index write occurs outside the ref guard.
   if [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index"; then
     real_index_lock_acquired=false
     return 0

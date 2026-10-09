@@ -591,6 +591,68 @@ test('committer rejects concurrent staged content and index-flag changes', async
   }
 });
 
+test('committer serializes a checkout whose index was already installed', async (t) => {
+  for (const destination of ['other', '--detach HEAD']) {
+    await t.test(destination, (t) => {
+      const root = makeCommittedFileRepo({ 'source.txt': 'v1\n', 'clean.txt': 'clean\n' });
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const realGit = run('sh', ['-c', 'command -v git'], root).stdout.trim();
+      run('git', ['branch', 'other'], root);
+      writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+      const postIndex = gitPath(root, 'hooks/post-index-change');
+      writeFileSync(postIndex, `#!/usr/bin/env bash
+set -eu
+[ "\${CHECKOUT_PROBE:-}" = 1 ] || exit 0
+touch .git/checkout-index-written
+for ((i=0;i<200;i++)); do
+  [ -e .git/release-checkout ] && exit 0
+  sleep 0.025
+done
+exit 1
+`);
+      const preCommit = gitPath(root, 'hooks/pre-commit');
+      writeFileSync(preCommit, `#!/usr/bin/env bash
+set -eu
+touch -t 202001010101 clean.txt
+(set +e; env -u GIT_INDEX_FILE CHECKOUT_PROBE=1 "${realGit}" switch -q ${destination}; printf '%s\\n' "$?" > .git/checkout-done) &
+for ((i=0;i<200;i++)); do
+  [ -e .git/checkout-index-written ] && exit 0
+  sleep 0.025
+done
+exit 1
+`);
+      const fakeBin = gitPath(root, 'timing-bin');
+      mkdirSync(fakeBin);
+      const fakeGit = path.join(fakeBin, 'git');
+      writeFileSync(fakeGit, `#!/usr/bin/env bash
+set -eu
+if [ "\${1:-}" = symbolic-ref ] && [ -e .git/checkout-index-written ] && [ ! -e .git/guard-read ]; then
+  "${realGit}" "$@" > .git/guard-read
+  touch .git/release-checkout
+  for ((i=0;i<200;i++)); do
+    if [ -e .git/checkout-done ]; then
+      cat .git/guard-read
+      exit 0
+    fi
+    sleep 0.025
+  done
+  exit 1
+fi
+exec "${realGit}" "$@"
+`);
+      for (const file of [postIndex, preCommit, fakeGit]) run('chmod', ['+x', file], root);
+      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): serialize checkout', 'source.txt'], root, { PATH: `${fakeBin}:${process.env.PATH}` });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(run('git', ['symbolic-ref', '-q', 'HEAD'], root).stdout, 'refs/heads/main\n');
+      assert.notEqual(readFileSync(gitPath(root, 'checkout-done'), 'utf8').trim(), '0');
+      assert.equal(run('git', ['show', 'main:source.txt'], root).stdout, 'v2\n');
+      assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v2\n');
+      assert.equal(run('git', ['show', 'other:source.txt'], root).stdout, 'v1\n');
+      for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+    });
+  }
+});
+
 test('committer reconciles an edited pure staged rename without stale content', () => {
   const root = makeCommittedFileRepo({ 'old.json': '{"version":1}\n', 'other.txt': 'v1\n' });
   run('git', ['mv', 'old.json', 'new.json'], root);
@@ -671,6 +733,86 @@ test('committer reserves index reconciliation before advancing the branch', () =
   rmSync(indexLock);
   assert.equal(run('git', ['write-tree'], root).stdout.trim(), indexBefore);
   rmSync(root, { recursive: true, force: true });
+});
+
+test('committer aborts when HEAD is already locked', (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const head = run('git', ['rev-parse', 'HEAD'], root).stdout;
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  writeFileSync(gitPath(root, 'HEAD.lock'), 'external lock\n');
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): respect HEAD lock', 'source.txt'], root);
+  assert.notEqual(result.status, 0);
+  assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout, head);
+  assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v1\n');
+  assert.equal(readFileSync(gitPath(root, 'HEAD.lock'), 'utf8'), 'external lock\n');
+  assert.equal(existsSync(gitPath(root, 'index.lock')), false);
+});
+
+test('committer retains the expected old object guard on an established branch', (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const hook = gitPath(root, 'hooks/pre-commit');
+  writeFileSync(hook, `#!/usr/bin/env bash
+set -eu
+concurrent="$(printf 'chore: concurrent commit\\n' | git commit-tree -p HEAD 'HEAD^{tree}')"
+git update-ref HEAD "$concurrent"
+printf '%s\\n' "$concurrent" > .git/concurrent-oid
+`);
+  run('chmod', ['+x', hook], root);
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): preserve concurrent branch', 'source.txt'], root);
+  assert.notEqual(result.status, 0);
+  assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout, readFileSync(gitPath(root, 'concurrent-oid'), 'utf8'));
+  assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v1\n');
+  for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+});
+
+test('committer preserves reference-transaction hook output and rejection', async (t) => {
+  for (const reject of [false, true]) {
+    await t.test(reject ? 'rejected prepare' : 'successful prepare', (t) => {
+      const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const head = run('git', ['rev-parse', 'HEAD'], root).stdout;
+      writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+      const hook = gitPath(root, 'hooks/reference-transaction');
+      writeFileSync(hook, `#!/usr/bin/env bash\nprintf 'reference hook output\\n'\n${reject ? '[ "$1" != prepared ]' : 'exit 0'}\n`);
+      run('chmod', ['+x', hook], root);
+      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): respect reference hook', 'source.txt'], root);
+      assert.equal(result.status === 0, !reject, result.stderr);
+      assert.match(result.stderr, /reference hook output/);
+      assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout === head, reject);
+      assert.equal(run('git', ['show', ':source.txt'], root).stdout, reject ? 'v1\n' : 'v2\n');
+      for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+    });
+  }
+});
+
+test('committer reconciles a committed ref after a lost acknowledgement', (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const realGit = run('sh', ['-c', 'command -v git'], root).stdout.trim();
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const fakeBin = gitPath(root, 'ack-bin');
+  mkdirSync(fakeBin);
+  const fakeGit = path.join(fakeBin, 'git');
+  writeFileSync(fakeGit, `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = update-ref ] && [ "\${2:-}" = --stdin ]; then
+  "${realGit}" "$@" | while IFS= read -r line; do
+    if [ "$line" != 'commit: ok' ]; then printf '%s\\n' "$line"; fi
+  done
+  exit 0
+fi
+exec "${realGit}" "$@"
+`);
+  run('chmod', ['+x', fakeGit], root);
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): recover acknowledgement', 'source.txt'], root, { PATH: `${fakeBin}:${process.env.PATH}` });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /acknowledgement failed; verified the committed ref/);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v2\n');
+  for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
 });
 
 test('committer reports success when EXIT cleanup recovers a transient index install failure', () => {

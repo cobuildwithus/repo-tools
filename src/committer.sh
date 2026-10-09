@@ -213,6 +213,7 @@ real_index_path=''
 real_index_lock=''
 real_index_lock_acquired=false
 ref_updated=false
+ref_transaction_dir=''
 
 finalize_reserved_index() {
   if [ "$real_index_lock_acquired" != true ]; then
@@ -276,6 +277,12 @@ cleanup() {
 
   if [ -n "$prepared_index" ]; then
     if ! rm -f "$prepared_index" "${prepared_index}.lock"; then
+      cleanup_failed=true
+    fi
+  fi
+
+  if [ -n "$ref_transaction_dir" ]; then
+    if ! rm -f "$ref_transaction_dir/replies" || ! rmdir "$ref_transaction_dir"; then
       cleanup_failed=true
     fi
   fi
@@ -563,11 +570,6 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
   fi
   real_index_lock_acquired=true
 
-  if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
-    printf 'Error: repository checkout changed during commit preparation; no commit was created\n' >&2
-    exit 1
-  fi
-
   index_changed=false
   if [ "$real_index_existed" = true ]; then
     if [ ! -f "$real_index_path" ]; then
@@ -594,10 +596,33 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
   fi
 fi
 
+ref_transaction_dir="$(mktemp -d "${TMPDIR:-/tmp}/committer-ref-transaction.XXXXXX")"
+mkfifo "$ref_transaction_dir/replies"
 trap '' HUP INT QUIT TERM
-if ! git update-ref "$branch_ref" "$new_commit" "$expected_old_oid"; then
-  install_signal_traps
-  exit 1
+# Updating HEAD locks both the symbolic ref and its target. An index lock alone
+# cannot exclude a checkout that has installed its index but not yet changed HEAD.
+if ! {
+  printf 'start\nupdate HEAD %s %s\nprepare\n' "$new_commit" "$expected_old_oid" || exit 1
+  exec 3<"$ref_transaction_dir/replies"
+  for phase in start prepare; do
+    IFS= read -r reply <&3 && [ "$reply" = "$phase: ok" ] || exit 1
+  done
+  if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
+    printf 'Error: repository checkout changed during commit preparation; no commit was created\n' >&2
+    # Closing stdin aborts the prepared transaction and releases its locks.
+    exit 1
+  fi
+  printf 'commit\n' || exit 1
+  exec 1>&-
+  IFS= read -r reply <&3 && [ "$reply" = 'commit: ok' ] || exit 1
+} | git update-ref --stdin >"$ref_transaction_dir/replies"; then
+  # A lost acknowledgement must not discard index reconciliation for a commit
+  # that Git actually installed. The new object identifies this exact attempt.
+  if [ "$(git rev-parse --verify "$branch_ref" 2>/dev/null || true)" != "$new_commit" ]; then
+    install_signal_traps
+    exit 1
+  fi
+  printf 'Warning: ref transaction acknowledgement failed; verified the committed ref before reconciling the index\n' >&2
 fi
 ref_updated=true
 exit 0

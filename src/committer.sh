@@ -425,6 +425,13 @@ real_index_path="$(git rev-parse --git-path index)"
 if [[ "$real_index_path" != /* ]]; then
   real_index_path="$PWD/$real_index_path"
 fi
+# Compare staged entries and user-controlled flags, not refreshable stat/cache bytes.
+# The second stream distinguishes intent-to-add entries from staged empty files.
+index_state() {
+  GIT_INDEX_FILE="$1" git -C "$repo_root" ls-files --stage -v -z || return 1
+  GIT_INDEX_FILE="$1" git -C "$repo_root" diff --cached --raw -z --no-abbrev --no-renames --ita-invisible-in-index "$comparison_tree" --
+}
+
 real_index_existed=false
 original_index_snapshot="$(mktemp "${TMPDIR:-/tmp}/committer-real-index.XXXXXX")"
 if [ -f "$real_index_path" ]; then
@@ -515,9 +522,22 @@ else
   new_commit="$(GIT_INDEX_FILE="$tmp_index" git commit-tree -F <(printf '%s\n' "$commit_message") "$(GIT_INDEX_FILE="$tmp_index" git write-tree)")"
 fi
 
+# A pure staged rename records the old blob at the new path mechanically.
+# Once both paths are committed, it is not a distinct partial staging snapshot.
+structural_rename_destinations=()
+while IFS= read -r -d '' rename_record && IFS= read -r -d '' rename_source && IFS= read -r -d '' rename_destination; do
+  read -r old_mode new_mode old_blob new_blob rename_status <<< "${rename_record#:}"
+  if [ "$rename_status" = R100 ] && [ "$old_mode" = "$new_mode" ] && [ "$old_blob" = "$new_blob" ] &&
+    contains_path "$rename_source" "${committed_files[@]}" && contains_path "$rename_destination" "${committed_files[@]}" &&
+    ! git cat-file -e "$new_commit:$rename_source" 2>/dev/null; then
+    structural_rename_destinations+=("$rename_destination")
+  fi
+done < <(GIT_INDEX_FILE="$original_index_snapshot" git -C "$repo_root" diff --cached --raw -z --no-abbrev --find-renames=100% --diff-filter=R "$comparison_tree" --)
+
 reconcile_files=()
 for committed_file in "${committed_files[@]}"; do
-  if [ "${#preexisting_staged_files[@]}" -eq 0 ] || ! contains_path "$committed_file" "${preexisting_staged_files[@]}"; then
+  if [ "${#preexisting_staged_files[@]}" -eq 0 ] || ! contains_path "$committed_file" "${preexisting_staged_files[@]}" ||
+    { [ "${#structural_rename_destinations[@]}" -gt 0 ] && contains_path "$committed_file" "${structural_rename_destinations[@]}"; }; then
     reconcile_files+=("$committed_file")
   fi
 done
@@ -536,8 +556,14 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
 
   index_changed=false
   if [ "$real_index_existed" = true ]; then
-    if [ ! -f "$real_index_path" ] || ! cmp -s "$real_index_path" "$original_index_snapshot"; then
+    if [ ! -f "$real_index_path" ]; then
       index_changed=true
+    elif ! cmp -s "$real_index_path" "$original_index_snapshot"; then
+      original_state="$(index_state "$original_index_snapshot" | git hash-object --stdin)"
+      current_state="$(index_state "$real_index_path" | git hash-object --stdin)"
+      if [ "$original_state" != "$current_state" ]; then
+        index_changed=true
+      fi
     fi
   elif [ -e "$real_index_path" ]; then
     index_changed=true

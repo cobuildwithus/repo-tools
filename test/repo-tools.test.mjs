@@ -536,6 +536,80 @@ test('committer reconciles only committed paths and preserves existing staged sn
   rmSync(root, { recursive: true, force: true });
 });
 
+test('committer allows stat-only index refresh during preparation', () => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n', 'clean.txt': 'clean\n' });
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const hook = gitPath(root, 'hooks/pre-commit');
+  writeFileSync(hook, '#!/usr/bin/env bash\nset -euo pipefail\ntouch -t 202001010101 clean.txt\nenv -u GIT_INDEX_FILE git status --porcelain >/dev/null\n');
+  run('chmod', ['+x', hook], root);
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): refresh index stats', 'source.txt'], root);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['status', '--porcelain'], root).stdout, '');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer rejects concurrent staged content and index-flag changes', async (t) => {
+  for (const mutation of ['printf "concurrent\\n" > unrelated.txt; env -u GIT_INDEX_FILE git add unrelated.txt',
+    'env -u GIT_INDEX_FILE git update-index --assume-unchanged unrelated.txt',
+    'env -u GIT_INDEX_FILE git update-index --skip-worktree unrelated.txt']) {
+    await t.test(mutation, () => {
+      const root = makeCommittedFileRepo({ 'source.txt': 'v1\n', 'unrelated.txt': 'other\n' });
+      const head = run('git', ['rev-parse', 'HEAD'], root).stdout;
+      writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+      const hook = gitPath(root, 'hooks/pre-commit');
+      writeFileSync(hook, `#!/usr/bin/env bash\nset -euo pipefail\n${mutation}\n`);
+      run('chmod', ['+x', hook], root);
+      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): reject index race', 'source.txt'], root);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /repository index changed during commit preparation/);
+      assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout, head);
+      rmSync(root, { recursive: true, force: true });
+    });
+  }
+});
+
+test('committer reconciles an edited pure staged rename without stale content', () => {
+  const root = makeCommittedFileRepo({ 'old.json': '{"version":1}\n', 'other.txt': 'v1\n' });
+  run('git', ['mv', 'old.json', 'new.json'], root);
+  writeFileSync(path.join(root, 'new.json'), '{"version":2}\n');
+  writeFileSync(path.join(root, 'other.txt'), 'separately staged\n');
+  run('git', ['add', 'other.txt'], root);
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): edited rename', 'old.json', 'new.json'], root);
+  assert.equal(run('git', ['show', 'HEAD:new.json'], root).stdout, '{"version":2}\n');
+  assert.equal(run('git', ['diff', '--cached', '--name-only'], root).stdout, 'other.txt\n');
+  assert.equal(run('git', ['diff', '--name-only', '--', 'new.json'], root).stdout, '');
+  assert.equal(run('git', ['show', ':other.txt'], root).stdout, 'separately staged\n');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer rejects changing a staged empty file to intent-to-add', () => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  writeFileSync(path.join(root, 'empty.txt'), '');
+  run('git', ['add', 'empty.txt'], root);
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const head = run('git', ['rev-parse', 'HEAD'], root).stdout;
+  const hook = gitPath(root, 'hooks/pre-commit');
+  writeFileSync(hook, '#!/usr/bin/env bash\nset -euo pipefail\nenv -u GIT_INDEX_FILE git reset -q HEAD -- empty.txt\nenv -u GIT_INDEX_FILE git add -N empty.txt\n');
+  run('chmod', ['+x', hook], root);
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): reject intent race', 'source.txt'], root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /repository index changed during commit preparation/);
+  assert.equal(run('git', ['rev-parse', 'HEAD'], root).stdout, head);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('committer preserves a distinct partial snapshot of a staged rename', () => {
+  const root = makeCommittedFileRepo({ 'old.json': '{"version":1}\n' });
+  run('git', ['mv', 'old.json', 'new.json'], root);
+  writeFileSync(path.join(root, 'new.json'), '{"version":2}\n');
+  run('git', ['add', 'new.json'], root);
+  writeFileSync(path.join(root, 'new.json'), '{"version":3}\n');
+  run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): partial rename', 'old.json', 'new.json'], root);
+  assert.equal(run('git', ['show', 'HEAD:new.json'], root).stdout, '{"version":3}\n');
+  assert.equal(run('git', ['show', ':new.json'], root).stdout, '{"version":2}\n');
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('committer reserves index reconciliation before advancing the branch', () => {
   const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
   writeFileSync(path.join(root, 'source.txt'), 'v2\n');

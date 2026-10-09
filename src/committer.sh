@@ -546,6 +546,15 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
   prepared_index="$(mktemp "${TMPDIR:-/tmp}/committer-prepared-index.XXXXXX")"
   cp "$original_index_snapshot" "$prepared_index"
   GIT_INDEX_FILE="$prepared_index" git -C "$repo_root" --literal-pathspecs reset -q "$new_commit" -- "${reconcile_files[@]}"
+  # reset retains skip-worktree, but clears assume-unchanged on replaced entries.
+  if [ "${#structural_rename_destinations[@]}" -gt 0 ]; then
+    for rename_destination in "${structural_rename_destinations[@]}"; do
+      original_flags="$(GIT_INDEX_FILE="$original_index_snapshot" git -C "$repo_root" --literal-pathspecs ls-files -v -- "$rename_destination")"
+      case "$original_flags" in
+        [a-z]*) GIT_INDEX_FILE="$prepared_index" git -C "$repo_root" update-index --assume-unchanged -- "$rename_destination" ;;
+      esac
+    done
+  fi
 
   real_index_lock="${real_index_path}.lock"
   if ! (set -o noclobber; : >"$real_index_lock") 2>/dev/null; then
@@ -553,6 +562,11 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
     exit 1
   fi
   real_index_lock_acquired=true
+
+  if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
+    printf 'Error: repository checkout changed during commit preparation; no commit was created\n' >&2
+    exit 1
+  fi
 
   index_changed=false
   if [ "$real_index_existed" = true ]; then

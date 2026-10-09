@@ -548,6 +548,29 @@ test('committer allows stat-only index refresh during preparation', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('committer rejects a changed checkout with an equivalent index', async (t) => {
+  for (const destination of ['other', '--detach HEAD']) {
+    await t.test(destination, (t) => {
+      const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const head = run('git', ['rev-parse', 'HEAD'], root).stdout;
+      run('git', ['branch', 'other'], root);
+      writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+      const hook = gitPath(root, 'hooks/pre-commit');
+      writeFileSync(hook, `#!/usr/bin/env bash\nset -euo pipefail\nenv -u GIT_INDEX_FILE git switch -q ${destination}\n`);
+      run('chmod', ['+x', hook], root);
+      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): reject checkout race', 'source.txt'], root);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /repository checkout changed during commit preparation/);
+      assert.equal(run('git', ['rev-parse', 'main'], root).stdout, head);
+      assert.equal(run('git', ['rev-parse', 'other'], root).stdout, head);
+      assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v1\n');
+      assert.equal(readFileSync(path.join(root, 'source.txt'), 'utf8'), 'v2\n');
+      assert.equal(existsSync(gitPath(root, 'index.lock')), false);
+    });
+  }
+});
+
 test('committer rejects concurrent staged content and index-flag changes', async (t) => {
   for (const mutation of ['printf "concurrent\\n" > unrelated.txt; env -u GIT_INDEX_FILE git add unrelated.txt',
     'env -u GIT_INDEX_FILE git update-index --assume-unchanged unrelated.txt',
@@ -580,6 +603,23 @@ test('committer reconciles an edited pure staged rename without stale content', 
   assert.equal(run('git', ['diff', '--name-only', '--', 'new.json'], root).stdout, '');
   assert.equal(run('git', ['show', ':other.txt'], root).stdout, 'separately staged\n');
   rmSync(root, { recursive: true, force: true });
+});
+
+test('committer preserves index flags on an edited pure staged rename', async (t) => {
+  for (const flags of [['--assume-unchanged'], ['--skip-worktree'], ['--assume-unchanged', '--skip-worktree']]) {
+    await t.test(flags.join(' '), (t) => {
+      const root = makeCommittedFileRepo({ 'old.txt': 'v1\n' });
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      run('git', ['mv', 'old.txt', 'new.txt'], root);
+      writeFileSync(path.join(root, 'new.txt'), 'v2\n');
+      for (const flag of flags) run('git', ['update-index', flag, 'new.txt'], root);
+      const before = run('git', ['ls-files', '-v', '--', 'new.txt'], root).stdout;
+      run(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): preserve rename flags', 'old.txt', 'new.txt'], root);
+      assert.equal(run('git', ['show', 'HEAD:new.txt'], root).stdout, 'v2\n');
+      assert.equal(run('git', ['show', ':new.txt'], root).stdout, 'v2\n');
+      assert.equal(run('git', ['ls-files', '-v', '--', 'new.txt'], root).stdout, before);
+    });
+  }
 });
 
 test('committer rejects changing a staged empty file to intent-to-add', () => {

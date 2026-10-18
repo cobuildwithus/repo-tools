@@ -25,11 +25,20 @@ completed_date="$(date +%Y-%m-%d)"
 tmp_file="$(mktemp)"
 
 awk -v date="$completed_date" '
-  BEGIN { status_seen=0; updated_seen=0 }
+  BEGIN { status_seen=0; updated_seen=0; in_status=0 }
   {
+    # A status can wrap across physical lines. Stop at a paragraph boundary,
+    # another metadata field, or a heading so the remaining plan stays intact.
+    if (in_status) {
+      if ($0 !~ /^[[:space:]]*$/ &&
+          $0 !~ /^[[:alpha:]][[:alnum:] _-]*:/ &&
+          $0 !~ /^#+[[:space:]]/) next
+      in_status=0
+    }
     if ($0 ~ /^Status:/) {
       print "Status: completed"
       status_seen=1
+      in_status=1
       next
     }
     if ($0 ~ /^Updated:/) {

@@ -26,6 +26,10 @@ npx skills add https://github.com/cobuildwithus/review-gpt --skill work-with-pro
 - `cobuild-generate-release-notes`
 - `cobuild-release-package`
 
+`cobuild-close-exec-plan` replaces a wrapped `Status:` paragraph through the next
+blank line, metadata field, or heading, preserving the rest of the plan. Consumers
+including Murph need a published-package upgrade to receive this correction.
+
 ## Config
 
 `cobuild-check-agent-docs-drift`, `cobuild-doc-gardening`, `cobuild-committer`, and `cobuild-package-audit-context` read configuration from environment variables so each consuming repo can keep only thin wrappers.

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.18] - 2026-10-18
+
+### Fixed
+- replace wrapped status when closing execution plans (#4)
+
 ## [0.1.17] - 2026-08-14
 
 ### Fixed

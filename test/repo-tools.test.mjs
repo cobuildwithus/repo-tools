@@ -176,6 +176,36 @@ test('open and close exec plan manage lifecycle', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+for (const boundary of [
+  'Created: 2026-01-01\nUpdated: 2026-01-01\n\n## Goal\nKeep the body.\n',
+  '\nThis paragraph belongs to the body.\n',
+  '## Goal\nKeep the heading and body.\n',
+  '',
+]) {
+  test(`close exec plan removes wrapped status before ${JSON.stringify(boundary)}`, () => {
+    const root = makeRepo();
+    try {
+      const active = 'agent-docs/exec-plans/active/sample.md';
+      const completed = 'agent-docs/exec-plans/completed/sample.md';
+      mkdirSync(path.dirname(path.join(root, active)), { recursive: true });
+      mkdirSync(path.dirname(path.join(root, completed)), { recursive: true });
+      writeFileSync(path.join(root, active),
+        '# Sample\n\nStatus: active (validation\n  still running; final checks\npending)\n' + boundary);
+
+      run(path.join(repoRoot, 'bin/cobuild-close-exec-plan'), [active], root);
+
+      const output = readFileSync(path.join(root, completed), 'utf8');
+      const date = output.match(/^Completed: (\d{4}-\d{2}-\d{2})$/m)[1];
+      const expectedBoundary = boundary.replace(/^Updated: .*$/m, `Updated: ${date}`);
+      assert.equal(output, '# Sample\n\nStatus: completed\n' + expectedBoundary +
+        (boundary.includes('Updated:') ? '' : `Updated: ${date}\n`) + `Completed: ${date}\n`);
+      assert.equal(existsSync(path.join(root, active)), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test('doc gardening tracks agent docs, llm refs, and configured extras', () => {
   const root = makeRepo();
   mkdirSync(path.join(root, 'agent-docs/references'), { recursive: true });

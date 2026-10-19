@@ -220,37 +220,34 @@ finalize_reserved_index() {
     return 0
   fi
 
-  # Ref commitment releases HEAD before this cleanup runs. Reacquire native
-  # ref locks so a checkout cannot change ownership during index installation.
-  if {
-    printf 'start\nverify HEAD %s\nprepare\n' "$new_commit" || exit 1
-    exec 3<"$ref_transaction_dir/replies"
-    for phase in start prepare; do
-      IFS= read -r reply <&3 && [ "$reply" = "$phase: ok" ] || exit 1
-    done
+  # Keep the move and its ownership state in this shell. Ref teardown can fail
+  # after the move releases index.lock; that must never retry a foreign lock.
+  local transaction_pid reply
+  git update-ref --stdin <"$ref_transaction_dir/commands" >"$ref_transaction_dir/replies" &
+  transaction_pid=$!
+  exec 4>"$ref_transaction_dir/commands"
+  exec 3<"$ref_transaction_dir/replies"
+
+  # Updating HEAD to its existing object locks HEAD and its branch without
+  # presenting a deletion to reference-transaction hooks, as verify does.
+  # Isolate SIGPIPE if the child exits before accepting its commands.
+  if (printf 'start\nupdate HEAD %s %s\nprepare\n' "$new_commit" "$new_commit" >&4) &&
+    IFS= read -r reply <&3 && [ "$reply" = 'start: ok' ] &&
+    IFS= read -r reply <&3 && [ "$reply" = 'prepare: ok' ]; then
     if [ "$(git symbolic-ref -q HEAD || true)" != "$branch_ref" ]; then
       printf 'Error: repository checkout changed before index reconciliation\n' >&2
-      exit 1
+    elif mv -f "$real_index_lock" "$real_index_path" ||
+      { [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index"; }; then
+      real_index_lock_acquired=false
     fi
-    if ! mv -f "$real_index_lock" "$real_index_path"; then
-      [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index" || exit 1
-    fi
-    printf 'abort\n' || exit 1
-    exec 1>&-
-    IFS= read -r reply <&3 && [ "$reply" = 'abort: ok' ] || exit 1
-  } | git update-ref --stdin >"$ref_transaction_dir/replies"; then
-    real_index_lock_acquired=false
-    return 0
   fi
 
-  # A lost acknowledgement after installation must not turn a confirmed write
-  # into a failed reconciliation. No index write occurs outside the ref guard.
-  if [ ! -e "$real_index_lock" ] && [ -f "$real_index_path" ] && cmp -s "$real_index_path" "$prepared_index"; then
-    real_index_lock_acquired=false
-    return 0
-  fi
-
-  return 1
+  # EOF aborts the prepared transaction. Reap our child even if it loses its
+  # final acknowledgement; successful installation has already ended ownership.
+  exec 4>&-
+  exec 3<&-
+  wait "$transaction_pid" || true
+  [ "$real_index_lock_acquired" != true ]
 }
 
 cleanup() {
@@ -302,7 +299,7 @@ cleanup() {
   fi
 
   if [ -n "$ref_transaction_dir" ]; then
-    if ! rm -f "$ref_transaction_dir/replies" || ! rmdir "$ref_transaction_dir"; then
+    if ! rm -f "$ref_transaction_dir/replies" "$ref_transaction_dir/commands" || ! rmdir "$ref_transaction_dir"; then
       cleanup_failed=true
     fi
   fi
@@ -617,7 +614,7 @@ if [ "${#reconcile_files[@]}" -gt 0 ]; then
 fi
 
 ref_transaction_dir="$(mktemp -d "${TMPDIR:-/tmp}/committer-ref-transaction.XXXXXX")"
-mkfifo "$ref_transaction_dir/replies"
+mkfifo "$ref_transaction_dir/replies" "$ref_transaction_dir/commands"
 trap '' HUP INT QUIT TERM
 # Updating HEAD locks both the symbolic ref and its target. An index lock alone
 # cannot exclude a checkout that has installed its index but not yet changed HEAD.

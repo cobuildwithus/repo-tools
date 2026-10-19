@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -880,7 +881,7 @@ exec "${realGit}" "$@"
 });
 
 test('committer retains recovery state when protected finalization fails', async (t) => {
-  for (const failure of ['advanced branch', 'rejected prepare', 'HEAD lock', 'index install']) {
+  for (const failure of ['advanced branch', 'rejected prepare', 'HEAD lock', 'index install', 'child startup']) {
     await t.test(failure, (t) => {
       const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
       t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -907,7 +908,24 @@ ${failure === 'rejected prepare' ? '[ "$1" != prepared ] || [ ! -e .git/ref-comm
         run('chmod', ['+x', path.join(fakeBin, 'mv')], root);
         env.PATH = `${fakeBin}:${process.env.PATH}`;
       }
-      const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): retain finalization recovery', 'source.txt'], root, env);
+      if (failure === 'child startup') {
+        const realGit = run('which', ['git'], root).stdout.trim();
+        const fakeBin = gitPath(root, 'startup-bin');
+        mkdirSync(fakeBin);
+        const fakeGit = path.join(fakeBin, 'git');
+        writeFileSync(fakeGit, `#!/usr/bin/env bash
+if [ "$1" = update-ref ] && [ "$2" = --stdin ] && [ -e .git/ref-committed ]; then
+  exit 1
+fi
+exec "${realGit}" "$@"
+`);
+        run('chmod', ['+x', fakeGit], root);
+        env.PATH = `${fakeBin}:${process.env.PATH}`;
+      }
+      const result = spawnSync(path.join(repoRoot, 'bin/cobuild-committer'), ['--skip-hooks', 'fix(repo): retain finalization recovery', 'source.txt'], {
+        cwd: root, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+      });
+      assert.equal(result.error, undefined, 'finalization must not deadlock when its child fails');
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /commit [a-f0-9]+ succeeded but the prepared repository index could not be installed/);
       assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
@@ -918,6 +936,110 @@ ${failure === 'rejected prepare' ? '[ "$1" != prepared ] || [ ! -e .git/ref-comm
       else assert.equal(existsSync(gitPath(root, 'HEAD.lock')), false);
     });
   }
+});
+
+test('committer preserves a native competing index writer after losing the final abort acknowledgement', async (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n', 'unrelated.txt': 'u1\n' });
+  const children = [];
+  const until = async (predicate, description) => {
+    const deadline = Date.now() + 10_000;
+    while (!predicate()) {
+      assert.ok(Date.now() < deadline, description);
+      await delay(10);
+    }
+  };
+  t.after(async () => {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        process.kill(-child.pid, 'SIGTERM');
+        await until(() => child.exitCode !== null || child.signalCode !== null, 'owned fixture process did not exit');
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  writeFileSync(path.join(root, 'unrelated.txt'), 'u2\n');
+  run('git', ['add', 'unrelated.txt'], root);
+  writeFileSync(path.join(root, 'unrelated.txt'), 'u3\n');
+  const hook = gitPath(root, 'hooks/reference-transaction');
+  writeFileSync(hook, `#!/usr/bin/env bash
+set -eu
+[ "$1" = aborted ] || exit 0
+[ ! -e .git/final-abort-ready ] || exit 0
+git show :unrelated.txt > .git/first-installed-staging
+printf '%s\\n' "$PPID" > .git/final-abort-ready
+for attempt in {1..800}; do
+  if [ -e .git/final-abort-release ]; then touch .git/final-abort-finished; exit 0; fi
+  sleep 0.01
+done
+exit 1
+`);
+  run('chmod', ['+x', hook], root);
+  const committer = spawn(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): preserve concurrent index writer', 'source.txt'], {
+    cwd: root, env: process.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  children.push(committer);
+  let stdout = '', stderr = '';
+  committer.stdout.on('data', chunk => { stdout += chunk; });
+  committer.stderr.on('data', chunk => { stderr += chunk; });
+  const ready = gitPath(root, 'final-abort-ready');
+  await until(() => existsSync(ready), 'final native abort hook was not reached');
+  assert.equal(readFileSync(gitPath(root, 'first-installed-staging'), 'utf8'), 'u2\n');
+  const finalRefPid = Number(readFileSync(ready, 'utf8').trim());
+  assert.equal(Number(run('ps', ['-p', String(finalRefPid), '-o', 'pgid='], root).stdout.trim()), committer.pid);
+  assert.match(run('ps', ['-p', String(finalRefPid), '-o', 'command='], root).stdout.trim(), /(?:^|\/)git update-ref --stdin$/);
+  const writer = spawn('git', ['update-index', '--index-info'], {
+    cwd: root, env: process.env, detached: true, stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  children.push(writer);
+  const lock = gitPath(root, 'index.lock');
+  await until(() => existsSync(lock), 'native concurrent writer did not acquire the released index lock');
+  assert.equal(statSync(lock).size, 0);
+  const writerLock = statSync(lock);
+  // This is the exact native final ref child in our fixture's process group.
+  process.kill(finalRefPid, 'SIGKILL');
+  writeFileSync(gitPath(root, 'final-abort-release'), 'release\n');
+  await until(() => committer.exitCode !== null || committer.signalCode !== null, 'committer did not finish after lost acknowledgement');
+  await until(() => existsSync(gitPath(root, 'final-abort-finished')), 'owned abort hook did not finish');
+  assert.equal(committer.exitCode, 0, stderr);
+  assert.equal((stdout.match(/Committed /g) || []).length, 1);
+  assert.equal(existsSync(lock), true, 'committer must leave the independent writer lock untouched');
+  assert.equal(statSync(lock).ino, writerLock.ino);
+  assert.equal(statSync(lock).size, 0);
+  writer.stdin.end();
+  await until(() => writer.exitCode !== null || writer.signalCode !== null, 'native writer did not finish');
+  assert.equal(writer.exitCode, 0);
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['show', ':unrelated.txt'], root).stdout, 'u2\n');
+  assert.equal(readFileSync(path.join(root, 'unrelated.txt'), 'utf8'), 'u3\n');
+  assert.equal(run('git', ['status', '--porcelain'], root).status, 0);
+  for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
+});
+
+test('committer finalization respects a native branch-deletion protection hook', (t) => {
+  const root = makeCommittedFileRepo({ 'source.txt': 'v1\n' });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(path.join(root, 'source.txt'), 'v2\n');
+  const hook = gitPath(root, 'hooks/reference-transaction');
+  writeFileSync(hook, `#!/usr/bin/env bash
+set -eu
+[ "$1" = prepared ] || exit 0
+while read -r old new ref; do
+  printf '%s %s %s\\n' "$old" "$new" "$ref" >> .git/prepared-transactions
+  if [ "$ref" = refs/heads/main ] && [ "$new" = 0000000000000000000000000000000000000000 ]; then
+    printf 'Fixture refuses deletion of protected main\\n' >&2
+    exit 1
+  fi
+done
+`);
+  run('chmod', ['+x', hook], root);
+  const result = runAllowFail(path.join(repoRoot, 'bin/cobuild-committer'), ['fix(repo): honor branch protection hook', 'source.txt'], root);
+  assert.equal(result.status, 0, result.stderr);
+  const head = run('git', ['rev-parse', 'HEAD'], root).stdout.trim();
+  assert.match(readFileSync(gitPath(root, 'prepared-transactions'), 'utf8'), new RegExp(`${head} ${head} refs/heads/main`));
+  assert.equal(run('git', ['show', 'HEAD:source.txt'], root).stdout, 'v2\n');
+  assert.equal(run('git', ['show', ':source.txt'], root).stdout, 'v2\n');
+  for (const file of ['index.lock', 'HEAD.lock', 'refs/heads/main.lock']) assert.equal(existsSync(gitPath(root, file)), false);
 });
 
 test('committer confirms an installed index after a lost abort acknowledgement', (t) => {
